@@ -1,0 +1,16 @@
+# ambiente virtual
+.venv/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# artefatos de modelos: 23 MB baixados na primeira execucao por
+# libras/core/models.py, que extrai os dois .tflite do .task
+models/
+
+# videos gerados para teste
+*.mp4
+*.avi

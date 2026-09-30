@@ -1,0 +1,13 @@
+# Runtime do LIBRAS_CODE.
+#
+# O rastreador roda os dois .tflite do hand_landmarker com ai-edge-litert, sem a
+# Tasks API do mediapipe: neste ambiente ela morre com SIGKILL (exit 137),
+# inclusive forcando delegate CPU. O download do .task e feito por urllib, da
+# stdlib, entao o mediapipe nao e dependencia.
+#
+# Para webcam o opencv precisa de backends de GUI (GTK ou Qt) no sistema.
+numpy>=1.26
+opencv-python>=4.9
+ai-edge-litert>=2.0
+
+# Testes: python -m unittest discover -s tests
