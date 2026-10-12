@@ -213,6 +213,7 @@ class HandTracker:
         max_hands: int = 2,
         roi_expand: float = 2.6,
         smoothing: float = 0.5,
+        max_coast: int = 4,
         num_threads: int = 4,
     ):
         from ai_edge_litert.interpreter import Interpreter
@@ -224,6 +225,9 @@ class HandTracker:
         self.max_hands = max_hands
         self.roi_expand = roi_expand
         self.smoothing = smoothing
+        # quantos quadros sem deteccao a ultima mao ainda e devolvida, para o
+        # detector piscar sem picar a leitura (0 desliga a ponte)
+        self.max_coast = max_coast
 
         self._palm_it = Interpreter(model_path=str(path.parent / "hand_detector.tflite"),
                                     num_threads=num_threads)
@@ -242,6 +246,8 @@ class HandTracker:
         self._o_pres, self._o_hand = scalars[0], scalars[1]
 
         self._tracks: list = []
+        self._last_hands: list = []
+        self._misses = 0
         self._frame_shape = (0, 0, 3)
 
     def close(self) -> None:
@@ -256,6 +262,8 @@ class HandTracker:
 
     def reset(self) -> None:
         self._tracks = []
+        self._last_hands = []
+        self._misses = 0
 
     # ---------------- deteccao de palma ----------------
 
@@ -398,13 +406,17 @@ class HandTracker:
             return 0.0
 
         # largura da palma / comprimento da palma: 1.09-1.14 na foto de teste
-        # (duas maos, presenca 0.89-0.98) e 0.07-0.46 nos recortes degenerados.
-        # E o sinal mais forte: a mao fantasma perde a relacao entre os MCPs.
+        # (duas maos, presenca 0.89-0.98). O limite superior e absoluto: palma
+        # maior que 2.2x o comprimento nao sai de nenhuma vista legitima.
+        # O limite inferior NAO pode ser absoluto: numa mao de perfil (C, O,
+        # sinal visto do lado) a largura projetada encolhe por geometria, nao
+        # por degeneracao -- chega a ~0.3 em perfil, e vetar isso e o que fazia
+        # o app nao achar a mao ao sinalizar C de lado.
         pr = palm / size
         score = 1.0
-        if pr < 0.45 or pr > 2.2:
+        if pr > 2.2:
             score -= 1.0
-        elif pr < 0.6 or pr > 1.8:
+        elif pr > 1.8:
             score -= 0.3
 
         # pulso -> metacarpal do medio sobre a extensao do esqueleto: 0.21-0.25
@@ -469,6 +481,15 @@ class HandTracker:
                (lm[:, 1] < -0.05) | (lm[:, 1] > 1.05)).mean()
         if out > 0.3:
             score -= 0.6
+
+        # largura projetada pequena: so derruba a nota quando o esqueleto inteiro
+        # ja mostrou degeneracao (os bem conhecidos recortes folgados combinavam
+        # largura pequena e geometria torta). Sozinha, largura pequena significa
+        # que a mao esta de perfil -- e o que o app precisa ler em C e O.
+        if pr < 0.45 and score < 0.75:
+            score -= 0.6
+        elif pr < 0.12:
+            score -= 0.4
         return float(np.clip(score, 0.0, 1.0))
 
     @staticmethod
@@ -482,37 +503,53 @@ class HandTracker:
     def process(self, frame: np.ndarray) -> list:
         self._frame_shape = frame.shape
         palms = self.detect_palms(frame)
-        if not palms:
-            self._tracks = []
-            return []
 
-        found: list = []
-        for p in palms:
-            out = self._infer(frame, p)
-            if out is None:
-                continue
-            presence, handed, lm, box = out
-            if presence < self.min_landmark:
-                continue
-            q = self._quality(lm)
-            if q < 0.5:
-                continue
-            found.append((p, presence, handed, lm, box, q))
-
-        # a mesma mao pode ser achada por varias palmas (duas ancoras com
-        # caixas parecidas): fica a de maior presenca
-        found.sort(key=lambda r: -r[1])
         hands: list = []
-        for p, presence, handed, lm, box, q in found:
-            if any(self._landmarks_overlap(lm, h.landmarks) > 0.5 for h in hands):
-                continue
-            hands.append(Hand(lm, presence, handed, box, 0.0))
-            if len(hands) >= self.max_hands:
-                break
+        if palms:
+            found: list = []
+            for p in palms:
+                out = self._infer(frame, p)
+                if out is None:
+                    continue
+                presence, handed, lm, box = out
+                if presence < self.min_landmark:
+                    continue
+                q = self._quality(lm)
+                if q < 0.5:
+                    continue
+                found.append((p, presence, handed, lm, box, q))
 
-        self._smooth(hands)
-        hands.sort(key=lambda hd: -hd.presence)
-        return hands
+            # a mesma mao pode ser achada por varias palmas (duas ancoras com
+            # caixas parecidas): fica a de maior presenca
+            found.sort(key=lambda r: -r[1])
+            for p, presence, handed, lm, box, q in found:
+                if any(self._landmarks_overlap(lm, h.landmarks) > 0.5 for h in hands):
+                    continue
+                hands.append(Hand(lm, presence, handed, box, 0.0))
+                if len(hands) >= self.max_hands:
+                    break
+
+            self._smooth(hands)
+            hands.sort(key=lambda hd: -hd.presence)
+
+        if hands:
+            self._misses = 0
+            self._last_hands = hands
+            return hands
+
+        # Nada valido neste quadro. O detector de palma e o `_quality` piscam
+        # (a mao some por um quadro, a pose de perfil cai abaixo do limiar), e
+        # devolver [] picaria a leitura. Segura a ultima mao por alguns quadros,
+        # com a presenca decaindo, para o vazio virar espaco so quando for de
+        # verdade.
+        self._misses += 1
+        if self._last_hands and self._misses <= self.max_coast:
+            decay = 1.0 - self._misses / (self.max_coast + 1.0)
+            return [Hand(h.landmarks.copy(), float(h.presence * decay),
+                         h.handedness, h.box, h.smooth) for h in self._last_hands]
+        self._tracks = []
+        self._last_hands = []
+        return []
 
     def _smooth(self, hands: list) -> None:
         """Suaviza os landmarks contra a track do quadro anterior.

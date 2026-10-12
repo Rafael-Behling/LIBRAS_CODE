@@ -88,6 +88,53 @@ class TestDactylologyRules(unittest.TestCase):
         self.assertNotEqual(juntos.candidates, abertos.candidates,
                             "espacamento nao mudou a leitura")
 
+    def test_arch_distinguishes_c_from_b(self):
+        """C e B tem os quatro dedos fora da palma e, na leitura real, o mesmo
+        polegar lateral: o que os separa e a curvatura. Antes o C em arco saia
+        como B (arco moderado) ou A (arco apertado), porque o corte do
+        `_extended` cai no meio do arco."""
+        b = make_pose(curl=(0.0, 0.0, 0.0, 0.0, 0.0), thumb_spread=0.0)
+        gb = recognise(b)
+        self.assertIn("B", gb.candidates)
+        self.assertNotIn("C", gb.candidates, "B reto lido como C")
+
+        # Na mao real o corte fica em arc ~0.17: B medido em 0.02-0.16 e C em
+        # 0.18-0.41. `make_pose` rende arc ~= 1.63*curl, entao 0.10 (arc ~0.16)
+        # ainda e B e 0.12 (arc ~0.20) ja e C -- trava a fronteira.
+        g10 = recognise(make_pose(curl=(0.0, 0.10, 0.10, 0.10, 0.10), thumb_spread=0.0))
+        self.assertEqual("B", g10.letter,
+                         f"curvatura rasa (arc~0.16) devia ser B, veio {g10.letter}")
+
+        for c in (0.12, 0.20, 0.35):
+            with self.subTest(curl=c):
+                gc = recognise(make_pose(curl=(0.0, c, c, c, c), thumb_spread=0.0))
+                self.assertEqual("C", gc.letter,
+                                 f"C em arco (curl={c}) lido como {gc.letter} "
+                                 f"{gc.candidates}")
+
+    def test_gap_separates_d_from_l(self):
+        """D e L tem a mesma pose de dedos (so o indicador estendido, resto no
+        punho) e se separam pela ABERTURA polegar-indicador, o "L" aberto: na
+        mao real as pontas do polegar e do indicador ficam a ~1.2 no L e a ~0.7
+        no D. A forma do polegar nao serve como criterio -- o D real sai lido
+        como 'c' (TC) ou ate 'lateral', alternando com a mao do usuario.
+
+        O polegar do sintetizador e curto e o `pose("L")` so abre ate ~0.76;
+        por isso o L aqui e montado com o polegar mais de lado (thumb_dir=120),
+        que reproduz a abertura medida na mao real."""
+        lh = make_pose(curl=(0.0, 0.0, 1.0, 1.0, 1.0), thumb_dir=120.0)
+        gl = recognise(lh)
+        self.assertEqual("L", gl.letter, f"L aberto veio {gl.candidates}")
+
+        gd = recognise(pose("D"))
+        self.assertEqual("D", gd.letter, f"D (polegar apoiado) veio {gd.candidates}")
+
+        d_c = make_pose(curl=(0.5, 0.0, 0.9, 0.9, 0.9),
+                        thumb_dir=30, thumb_spread=-0.6)
+        gc = recognise(d_c)
+        self.assertEqual("D", gc.letter,
+                         f"D com polegar 'c' (caso real) veio {gc.candidates}")
+
     def test_history_disambiguates_motion_letters(self):
         """J e Z so existem como movimento. Com historico parado nao podem ser
         sugeridos."""

@@ -16,6 +16,12 @@ movimento ou trajetoria (A/I/G, J/Z, U/V, H/K, E/M/O/S/X, ...). O modulo de
 datilologia devolve essas leituras como `candidates` com `needs` (o que falta)
 em vez de chutar uma letra. O acumulador de frases ignora leituras ambiguas.
 
+As regras tropecam nos pares de mesma pose (D/L, B/C): o desempate depende de
+limiares medidos para uma mao e um angulo. Quando ha amostras rotuladas, um
+**classificador** treinado nelas assume e generaliza melhor -- veja
+[Treinar um classificador](#treinar-um-classificador). As regras continuam
+como fallback e como unica via para as letras dinamicas (H, J, K, X, Y, Z).
+
 ## Instalacao
 
 ```
@@ -51,6 +57,30 @@ quadros (`--hold`, padrao 5) para entrar na frase, e depois de aceita ha um
 `cooldown` para a mao poder sair e voltar. Uma pausa longa vira espaco entre
 palavras.
 
+## Treinar um classificador
+
+O app funciona so com as regras. Para usar o classificador, grave amostras da
+sua mao e treine:
+
+```
+python tools/collect_samples.py        # grava data/samples.npz
+python tools/train_classifier.py       # treina models/dactylology_clf.npz
+python app.py                          # carrega o modelo, se existir
+```
+
+Ao gravar, escolha a letra pelo teclado (A-Z) e mantenha a pose gravando; cada
+letra quer ~20-40 amostras, variando um pouco angulo e distancia. O dataset
+guarda os 21 landmarks (nao as features), entao sobrevive a mudancas no
+extrator. O treino imprime acuracia e as confusoes mais comuns, segurando 20%
+de cada letra para teste.
+
+O modelo e uma regressao softmax em numpy puro (sem sklearn): o vetor de
+entrada e o `HandFeatures.vector()`, padronizado por z-score. Em Libras 6
+letras do alfabeto manual sao **dinamicas** (tem movimento): H, J, K, X, Y, Z.
+Como o movimento nao aparece num quadro so, elas ficam de fora do modelo
+estatico e seguem pelas regras com historico; o classificador cobre as outras
+**20 letras estaticas**.
+
 ## Estrutura
 
 ```
@@ -62,9 +92,12 @@ libras/
     phrase.py          acumulador de letras em frase (histerese temporal)
   signs/
     dactylology.py     regras A-Z com ambiguidades explicitas
+    classifier.py      regressao softmax em numpy (opcional, com amostras)
   data/
     synthetic.py       gera poses de 21 landmarks sem camera
 tools/
+  collect_samples.py   grava amostras rotuladas (webcam) para treino
+  train_classifier.py  treina o classificador a partir das amostras
   make_demo_video.py   gera um video sintetico "OLAR" para testar a app
 app.py                 interface webcam
 tests/                 unittest (tests/data/hands.jpg: foto real de referencia)
@@ -107,7 +140,8 @@ python -m unittest discover -s tests
 ```
 
 Cobrem: features invariantes a escala, dimensoes do vetor de features, as
-regras de datilologia e suas ambiguidades, o acumulador de frases, e o
+regras de datilologia e suas ambiguidades, o acumulador de frases, o
+classificador (treino, persistencia e integracao, com poses sinteticas), e o
 rastreador contra uma foto real (`tests/data/hands.jpg`, duas maos) em
 escala, espelhamento e proporcoes diferentes. Boneco desenhado nao serve como
 fixture: o detector de palma nao enxerga mao sintetica.

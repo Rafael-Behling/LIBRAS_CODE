@@ -38,6 +38,22 @@ class TestPhraseBuilder(unittest.TestCase):
             b.push(g("A" if i % 2 == 0 else "L"))
         self.assertEqual(b.text, "", f"texto indevido: {b.text!r}")
 
+    def test_single_wrong_frame_does_not_reset_hold(self):
+        """Um quadro lido como outra letra (flicker) nao reinicia a leitura."""
+        b = PhraseBuilder(hold_frames=5, cooldown=0, space_after=999)
+        feed(b, g("C"), 4)
+        feed(b, g("D"), 1)                 # classificador piscou para D
+        feed(b, g("C"), 2)                 # volta para C
+        self.assertEqual(b.text, "C", f"um quadro isolado derrubou: {b.text!r}")
+
+    def test_single_quiet_frame_does_not_reset_hold(self):
+        """Um quadro sem leitura (mao perdida) nao reinicia a leitura."""
+        b = PhraseBuilder(hold_frames=5, cooldown=0, space_after=999)
+        feed(b, g("C"), 4)
+        feed(b, None, 1)                   # rastreador perdeu a mao
+        feed(b, g("C"), 2)
+        self.assertEqual(b.text, "C", f"um quadro sem leitura derrubou: {b.text!r}")
+
     def test_word_sequence(self):
         b = PhraseBuilder(hold_frames=3, cooldown=2, space_after=4)
         for letter in "OLAR":

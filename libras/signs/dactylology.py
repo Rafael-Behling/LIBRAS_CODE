@@ -73,6 +73,12 @@ LETTERS: tuple = (
 # letras que so se distinguem por trajetoria, nao por pose
 MOTION_LETTERS = frozenset("JZW")
 
+# Em Libras, 6 letras do alfabeto manual sao dinamicas (tem movimento): H, J,
+# K, X, Y, Z. As outras 20 sao estaticas. Um classificador de quadro unico nao
+# enxerga movimento, entao essas 6 ficam de fora dele e seguem pelas regras com
+# historico.
+DYNAMIC_LETTERS = frozenset("HJKXYZ")
+
 
 @dataclass
 class LetterGuess:
@@ -102,6 +108,17 @@ def _extended(f: HandFeatures) -> list:
     return [bool(f.angles[i, 0] > 145.0
                  or (f.angles[i, 0] > 125.0 and f.curl[FINGERS.index(FINGERS_4[i])] < 0.45))
             for i in range(4)]
+
+
+def _out(f: HandFeatures) -> list:
+    """Dedos fora da palma: estendidos OU em arco, mas nao dobrados no punho.
+
+    O corte do `_extended` fica em ~139 graus, bem no meio do arco do C
+    (PIP 120-150). Por isso a leitura oscilava: ora os quatro dedos contavam,
+    ora um caia e o padrao deixava de ser (1,1,1,1). Aqui o arco vale como
+    "fora", que e o que a mao faz em C -- o que decide B x C e a curvatura.
+    """
+    return [bool(f.angles[i, 0] > 118.0) for i in range(4)]
 
 
 def _thumb_shape(f: HandFeatures) -> str:
@@ -151,19 +168,61 @@ def _closed(f: HandFeatures) -> float:
 
 # --- reconhecimento -------------------------------------------------------
 
-def recognise(hand: Hand, history=None) -> LetterGuess | None:
+def recognise(hand: Hand, history=None, classifier=None) -> LetterGuess | None:
     """Leitura de datilologia para uma pose.
 
-    `history` (HandHistory) e opcional; quando ha trajetoria, as letras de
-    movimento (J, Z, W) deixam de ser ambiguas.
+    `history` (HandHistory) e opcional; quando ha trajetoria, as letras que
+    dependem de movimento deixam de ser ambiguas.
+
+    `classifier` (LetterClassifier) e opcional. Quando existe, ele e a leitura
+    principal -- foi treinado com as amostras do usuario e separa os pares que
+    as regras so desempatam por limiares frageis. As regras continuam sendo o
+    fallback e as unicas que enxergam movimento, porque o classificador e
+    estatico e nao cobre as 6 letras dinamicas (H, J, K, X, Y, Z).
     """
     f = hand_features(hand)
+    if classifier is not None:
+        guess = _recognise_model(f, history, classifier)
+        if guess is not None:
+            return guess
+    return _recognise_rules(f, history)
+
+
+# letras que o classificador estatico nao representa: so existem com trajetoria
+_MOTION_ONLY = DYNAMIC_LETTERS
+
+
+def _recognise_model(f: HandFeatures, history, classifier) -> LetterGuess | None:
+    """Usa o classificador, deixando o movimento para as regras.
+
+    Quando a mao esta se mexendo e a pose estatica colide com uma letra
+    dinamica (H, J, K, X, Y, Z), as regras tem mais o que dizer do que o
+    classificador -- ele nunca viu essas letras e cravreria uma vizinha
+    estatica errada. Por isso devolvemos a leitura das regras (com candidatos)
+    em vez de um chute confiante e errado.
+    """
+    moving = (history is not None and len(history) >= 4
+              and history.displacement() > 0.04)
+    if moving:
+        rules = _recognise_rules(f, history)
+        if rules is not None and any(c in _MOTION_ONLY for c in rules.candidates):
+            return rules
+    guess = classifier.to_guess(f.vector())
+    return guess if guess.candidates else None
+
+
+def _recognise_rules(f: HandFeatures, history=None) -> LetterGuess | None:
+    """Leitura por regras geometricas (usada como fallback e para movimento)."""
     ext = _extended(f)
+    out = _out(f)
     thumb = _thumb_shape(f)
     pattern = tuple(1 if x else 0 for x in ext)
     upright = _upright(f)
     spread = _spread_index_middle(f)
-    closed = _closed(f)
+    # curvatura media dos quatro dedos (indicador a mininho): e o que separa B
+    # (retos) de C (em arco). Medido com a mao real, B fica em 0.05-0.16 e C em
+    # 0.18-0.35, entao 0.17 cai no vao entre os dois.
+    arc = float(f.curl[1:].mean())
 
     # desempate dentro do mesmo padrao de dedos
     def refine(l: Letter) -> float:
@@ -173,15 +232,76 @@ def recognise(hand: Hand, history=None) -> LetterGuess | None:
             # U e H tem os dedos juntos; V e K tem o par afastado. A divisao
             # certa e (U,H) juntos x (V,K) afastados: H nao e "aberto", e o
             # que separa H de U e a orientacao da mao, nao o espacamento.
-            s += 0.3 if ((spread > 0.55) == (l.name in ("V", "K"))) else -0.3
+            apart = spread > 0.55
+            s += 0.3 if (apart == (l.name in ("V", "K"))) else -0.3
+            # H e K geralmente com mao mais lateral/orientada; U/V mais "para cima"
+            if l.name in ("H", "K") and upright:
+                s -= 0.1
+            if l.name in ("U", "V") and not upright:
+                s -= 0.1
         if l.name in ("E", "M", "S", "X", "A", "B", "C", "D"):
             s += 0.2 if upright else -0.2
-        if l.name == "L":
-            # indicador quase vertical e reto, demais dedos recolhidos
-            s += 0.3 if (f.angles[0, 0] > 165.0 and closed > 0.5) else -0.3
+        if l.name in ("B", "C"):
+            # B e C compartilham a pose-base (quatro dedos para fora da palma) e o
+            # polegar costuma sair lateral nos dois; o que os separa e a
+            # curvatura: B retos, C em arco. Corte decisivo em 0.17 (no vao
+            # medido), com o polegar so como empurrao.
+            arched = arc > 0.17
+            if l.name == "C":
+                s += 0.4 if arched else -0.4
+                s += 0.1 if thumb == TC else 0.0
+            else:  # B
+                s += 0.4 if not arched else -0.4
+                s -= 0.1 if thumb == TC else 0.0
+        if l.name in ("D", "L"):
+            # D e L sao a MESMA pose de dedos (so o indicador estendido); separa
+            # pela abertura polegar-indicador: em L os dois ficam estendidos e
+            # afastados, formando o "L", com as pontas longe (~1.2 medidas); em
+            # D o polegar dobra junto ao indicador, pontas perto (~0.7). A forma
+            # do polegar sozinha nao serve: o D real sai lido como lateral/c.
+            gap = float(np.linalg.norm(f.tips_local[0] - f.tips_local[1]))
+            wide = gap > 1.0
+            if l.name == "L":
+                s += 0.35 if wide else -0.35
+            else:  # D
+                s += 0.35 if not wide else -0.35
+        # G/I/J/Y/Z: todos com padrao (0,0,0,1) - mininho estendido
+        if l.name in ("G", "I", "J", "Y", "Z"):
+            idx_y = f.tips_local[1, 1] if len(f.tips_local) > 1 else 0
+            if l.name == "G" and not upright:
+                s += 0.1
+            if l.name in ("I", "Y") and upright:
+                s += 0.05
+            if l.name == "Y":
+                s += 0.1 if f.curl[4] > 0.3 else -0.02
+            # Se há histórico, usar trajetória para ajudar a distinguir J/Z
+            try:
+                if history is not None and len(history) >= 6:
+                    strt = history.straightness()
+                    if l.name == "Z" and strt > 0.6:
+                        s += 0.1
+                    if l.name == "J" and strt < 0.4:
+                        s += 0.1
+            except Exception:
+                pass
         return s
 
     same = [l for l in LETTERS if l.fingers == pattern and l.thumb == thumb]
+
+    # B e C tem a mesma pose-base e se separam so pela curvatura. Junta os dois
+    # quando os quatro dedos estao no padrao estendido (nao existe outra letra
+    # com esse padrao) e deixa o `refine` decidir. Quando um dedo em arco faz o
+    # padrao binario perder uma posicao, C ainda entra se o arco for claro --
+    # sem isso, arco apertado virava A e arco medio virava B.
+    if pattern == (1, 1, 1, 1):
+        same = [l for l in LETTERS if l.name in ("B", "C")]
+    elif tuple(out) == (1, 1, 1, 1) and arc > 0.25:
+        same = [l for l in LETTERS if l.name == "C"]
+    elif pattern == (1, 0, 0, 0):
+        # D e L so diferem pelo polegar; junta os dois e deixa o `refine`
+        # decidir pela forma do polegar.
+        same = [l for l in LETTERS if l.name in ("D", "L")]
+
     if not same:
         # Nenhuma letra tem exatamente esta combinacao. Em vez de devolver
         # nada, devolve as letras com o mesmo conjunto de dedos para que o
@@ -200,12 +320,18 @@ def recognise(hand: Hand, history=None) -> LetterGuess | None:
     # parada -- nao ha como separa-las da letra estatica de mesma pose, entao
     # sao retiradas em vez de sorteadas.
     moving = False
+    disp = 0.0
     if history is not None and len(history) >= 4:
-        moving = history.displacement() > 0.04
+        disp = history.displacement()
+        moving = disp > 0.04
     if not moving:
         static = [l for l in same if l.name not in MOTION_LETTERS]
         if static:
             same = static
+    elif disp > 0.06:
+        dyn = [l for l in same if l.name in MOTION_LETTERS]
+        if dyn:
+            same = dyn
 
     ranked = sorted(((refine(l), l) for l in same), key=lambda t: -t[0])
     top_score, top = ranked[0]

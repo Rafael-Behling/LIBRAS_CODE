@@ -44,10 +44,23 @@ class TestTracking(unittest.TestCase):
             self.assertGreaterEqual(self.tracker._quality(h.landmarks), 0.5)
 
     def test_no_hands_on_empty_frames(self):
+        self.tracker.reset()                   # sem deteccao recente nao ha ponte
         for frame in (np.full((720, 960, 3), 90, np.uint8),
                       np.random.default_rng(0).integers(0, 255, (720, 960, 3), dtype=np.uint8),
                       self.img[0:180, 0:640]):
             self.assertEqual(self.tracker.process(frame), [], "mao fantasma em frame vazio")
+
+    def test_brief_dropout_keeps_the_hand(self):
+        """O detector de palma pisca: um quadro sem deteccao nao pode derrubar a
+        mao (senao a leitura reinicia). A ponte dura alguns quadros e depois
+        solta, para nao virar mao fantasma."""
+        self.tracker.reset()
+        self.assertEqual(len(self.tracker.process(self.img)), 2)
+        blank = np.full_like(self.img, 20)
+        self.assertEqual(len(self.tracker.process(blank)), 2, "um quadro perdido derrubou a mao")
+        for _ in range(self.tracker.max_coast):
+            self.tracker.process(blank)
+        self.assertEqual(self.tracker.process(blank), [], "a ponte nao soltou a mao")
 
     def test_detects_across_scale_flip_and_letterbox(self):
         """Escala, espelhamento e mudanca de aspecto nao podem derrubar a
@@ -156,6 +169,28 @@ class TestQuality(unittest.TestCase):
             lm = rng.random((21, 3)).astype(np.float32)
             self.assertLess(self.tracker._quality(lm), 0.5,
                             "landmarks aleatorios aceitos como mao")
+
+    def test_profile_hand_scores_well(self):
+        """Mao de perfil (letra C/O, vista do lado) tem largura de palma pequena
+        porque a projecao encolhe -- nao e degeneracao. O ``_quality`` vetava
+        esse caso com o pr < 0.45 e o app nao achava a mao ao sinalizar C."""
+        # esqueleto em px num frame 640x640: dedos em arco, MCPs quase sobre o
+        # eixo da mao, largura da palma ~0.2x o comprimento (indices MediaPipe)
+        px = {
+            0: (180, 140), 1: (175, 175), 2: (150, 182), 3: (160, 205),
+            4: (172, 225),                                          # polegar
+            5: (175, 220), 6: (172, 265), 7: (180, 290), 8: (192, 305),
+            9: (185, 220), 10: (182, 275), 11: (190, 300), 12: (202, 318),
+            13: (192, 220), 14: (188, 265), 15: (196, 288), 16: (206, 302),
+            17: (198, 218), 18: (195, 255), 19: (201, 274), 20: (209, 287),
+        }
+        lm = np.empty((21, 3), np.float32)
+        lm[:, 0] = [px[i][0] / 640.0 for i in range(21)]
+        lm[:, 1] = [px[i][1] / 640.0 for i in range(21)]
+        lm[:, 2] = np.linspace(0.0, 0.1, 21, dtype=np.float32)
+        self.tracker._frame_shape = (640, 640, 3)
+        self.assertGreaterEqual(self.tracker._quality(lm), 0.5,
+                                "mao de perfil rejeitada como fantasma")
 
 
 @unittest.skipUnless(_photo() is not None, "fixture tests/data/hands.jpg ausente")

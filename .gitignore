@@ -14,3 +14,6 @@ models/
 # videos gerados para teste
 *.mp4
 *.avi
+
+# amostras gravadas para treinar o classificador (dados do usuario)
+/data/
