@@ -9,5 +9,6 @@
 numpy>=1.26
 opencv-python>=4.9
 ai-edge-litert>=2.0
+pillow>=10.0
 
 # Testes: python -m unittest discover -s tests

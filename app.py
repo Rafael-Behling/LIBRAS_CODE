@@ -9,6 +9,10 @@ Controles (Janela de video):
     ESPACO  segura a letra atual (forca a entrada na frase)
     B       apaga o ultimo caractere
     C       limpa a frase
+    ENTER   salva a frase no historico
+    H       abre o historico
+    T       alterna o tema claro/escuro
+    ?       abre a lista de atalhos
     Q/ESC   sai
 """
 from __future__ import annotations
@@ -28,84 +32,14 @@ from libras.core.hand_tracker import HandTracker
 from libras.core.phrase import PhraseBuilder
 from libras.signs.classifier import LetterClassifier
 from libras.signs.dactylology import recognise
+from libras.ui import Hud, HudState, get_theme
 
 WINDOW = "Libras -> Português"
-BAR_H = 120
-
-
-def draw_overlay(frame, hands, phrase, fps, hold_progress=0.0, hold_total=1.0):
-    """Desenha landmarks, caixa e a frase na parte inferior."""
-    out = frame.copy()
-    for hand in hands:
-        px = hand.landmarks[:, :2] * np.array([frame.shape[1], frame.shape[0]])
-        for i, (x, y) in enumerate(px.astype(int)):
-            if i == 0:
-                cv2.circle(out, (x, y), 6, (0, 255, 0), -1)
-                cv2.circle(out, (x, y), 3, (255, 255, 255), -1)
-            else:
-                cv2.circle(out, (x, y), 4, (0, 180, 255), -1)
-        bx = [int(v) for v in hand.box]
-        cv2.rectangle(out, (bx[0], bx[1]), (bx[2], bx[3]), (0, 255, 0), 2)
-
-    h, w = out.shape[:2]
-    # barra da frase com gradiente visual
-    cv2.rectangle(out, (0, h - BAR_H), (w, h), (18, 18, 18), -1)
-    cv2.line(out, (0, h - BAR_H), (w, h - BAR_H), (60, 60, 60), 1)
-
-    # barra de progresso para confirmar letra
-    if hold_total > 0 and hold_progress > 0:
-        prog_w = int((w - 36) * min(hold_progress / hold_total, 1.0))
-        if prog_w > 0:
-            cv2.rectangle(out, (18, h - BAR_H + 8), (18 + prog_w, h - BAR_H + 12), (0, 180, 255), -1)
-
-    # letra em leitura
-    if phrase.current:
-        cv2.putText(out, phrase.current, (18, h - 68),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.6, (0, 200, 255), 3)
-    if phrase.candidates and len(phrase.candidates) > 1:
-        # votacao: mostra para onde a leitura esta convergindo
-        votes = " / ".join(f"{name}:{weight:g}" for name, weight in phrase.votes[:4])
-        cv2.putText(out, votes, (18, h - 38),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
-        if phrase.needs:
-            cv2.putText(out, phrase.needs, (18, h - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1)
-
-    # frase acumulada
-    text = phrase.text
-    if text:
-        scale = 1.0
-        (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)
-        while tw > w - 40 and scale > 0.4:
-            scale -= 0.05
-            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)
-        cv2.putText(out, text, (18, h - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, scale, (240, 240, 240), 2)
-    else:
-        cv2.putText(out, "Frase aparecerá aqui...", (18, h - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (90, 90, 90), 1)
-
-    # status
-    n = len(hands)
-    status = f"Mãos: {n}  •  FPS: {fps:.0f}"
-    cv2.putText(out, status, (w - 200, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-
-    # controles
-    controls = "[Espaço] confirmar  [B] apagar  [C] limpar  [Q/ESC] sair"
-    cv2.putText(out, controls, (18, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
-
-    if n == 0:
-        cv2.putText(out, "Mostre a mão para a câmera", (w // 2 - 190, h // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.95, (255, 255, 255), 2)
-        cv2.putText(out, "Posicione sua mão de frente para a câmera", (w // 2 - 180, h // 2 + 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-    return out
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--source", help="arquivo de video no lugar da webcam")
     ap.add_argument("--models", default="models")
@@ -121,6 +55,8 @@ def main(argv=None):
     ap.add_argument("--no-gui", action="store_true",
                     help="nao abre janela: util para testar com --source em maquina "
                          "sem display ou em servidor")
+    ap.add_argument("--theme", choices=["dark", "light"], default="dark",
+                    help="tema da interface (T alterna em tempo de execucao)")
     ap.add_argument("--classifier", default=None,
                     help="modelo treinado (padrao: models/dactylology_clf.npz "
                          "se existir)")
@@ -142,6 +78,10 @@ def main(argv=None):
     tracker = HandTracker(args.models, max_hands=args.max_hands)
     builder = PhraseBuilder(hold_frames=args.hold)
     histories: dict = {}
+    history: list = []
+
+    hud = Hud(get_theme(args.theme))
+    state = HudState(history=history)
 
     clf_path = Path(args.classifier) if args.classifier \
         else Path(args.models) / "dactylology_clf.npz"
@@ -178,13 +118,14 @@ def main(argv=None):
                 histories = {key: hist}
         phrase = builder.push(guess)
 
-        hold_progress = getattr(builder, "_hold", 0)
-        hold_total = getattr(builder, "hold_frames", args.hold)
-
         if not args.no_gui:
-            display = draw_overlay(frame, hands, phrase, fps,
-                                   hold_progress=hold_progress,
-                                   hold_total=hold_total)
+            state.hands = hands
+            state.phrase = phrase
+            state.fps = fps
+            state.hold_progress = getattr(builder, "_hold", 0)
+            state.hold_total = getattr(builder, "hold_frames", args.hold)
+            display = hud.render(frame, state)
+
             if args.fullscreen:
                 cv2.namedWindow(WINDOW, cv2.WINDOW_FULLSCREEN)
             else:
@@ -204,6 +145,23 @@ def main(argv=None):
                 builder.backspace()
             elif key in (ord("c"), ord("C")):
                 builder.reset()
+            elif key == 13:            # ENTER: guarda a frase no historico
+                if builder.text.strip():
+                    history.append(builder.text.strip())
+                    builder.reset()
+                    hud.notify("frase salva no histórico")
+                else:
+                    hud.notify("nada para salvar")
+            elif key in (ord("h"), ord("H")):
+                if state.overlay == "history":
+                    state.overlay = ""
+                else:
+                    state.overlay = "history"
+            elif key in (ord("t"), ord("T")):
+                theme = hud.toggle_theme()
+                hud.notify(f"tema {theme.name}")
+            elif key == ord("?") or key == ord("/"):
+                state.overlay = "" if state.overlay == "help" else "help"
         else:
             if guess:
                 print(f"letra={guess} maos={len(hands)} frase={builder.text!r}")

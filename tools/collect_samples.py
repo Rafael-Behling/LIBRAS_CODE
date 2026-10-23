@@ -4,6 +4,7 @@ Uso:
     python tools/collect_samples.py                     # webcam 0
     python tools/collect_samples.py --camera 1
     python tools/collect_samples.py --out data/samples.npz
+    python tools/collect_samples.py --replace LC        # regrava L e C do zero
 
 Controles (janela):
     A..Z     escolhe a letra e comeca a gravar essa letra
@@ -84,10 +85,25 @@ def main(argv=None):
     ap.add_argument("--stride", type=int, default=2,
                     help="grava um quadro a cada N (evita amostras quase iguais)")
     ap.add_argument("--min-presence", type=float, default=0.6)
+    ap.add_argument("--replace", default="",
+                    help="letras a descartar do dataset antes de gravar "
+                         "(ex.: 'LC' regrava L e C do zero)")
     args = ap.parse_args(argv)
 
     out_path = Path(args.out)
     lm, labels, presence, handedness = load_dataset(out_path)
+
+    # Regravar uma letra so faz sentido se as amostras velhas dela sairem:
+    # senao o modelo continua aprendendo com o rotulo ruidoso que motivou a
+    # regravacao. `--replace LC` tira L e C do dataset antes de comecar.
+    drop = {c.upper() for c in args.replace if c.strip()}
+    if drop:
+        keep = np.array([str(v) not in drop for v in labels])
+        removidas = len(labels) - int(keep.sum())
+        lm, labels = lm[keep], labels[keep]
+        presence, handedness = presence[keep], handedness[keep]
+        print(f"--replace: removidas {removidas} amostras de {sorted(drop)}")
+
     n_base = len(labels)
 
     cap = cv2.VideoCapture(args.camera)

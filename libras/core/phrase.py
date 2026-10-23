@@ -4,19 +4,33 @@ Uma letra so entra na frase quando a leitura se sustenta por varios quadros.
 Sem isso, uma pose no limite entre duas letras produz texto ilegivel
 ('OLRLO' em vez de 'OLA'). As opcoes:
 
-  * `hold_frames`  quantos quadros a leitura precisa se sustentar
+  * `hold_frames`  quadros que a leitura precisa se sustentar
   * `cooldown`     quadros ignorados depois de aceitar uma letra, para a
                    mao poder sair da pose e voltar sem repetir a letra
   * `space_after`  quantos quadros sem letra viram um espaco na frase
 
-Algumas letras tem a MESMA pose e so a orientacao/movimento as separa
-(A/I/G, J/Z, U/V, E/M/O/S/X). O reconhecedor devolve essas leituras como
-`candidates` e nao como certeza. Em vez de descartar uma leitura ambigua --
-o que fazia a app "nunca aceitar nada" -- a votacao temporal decide: cada
-quadro vota nos seus candidatos, com peso pela posicao (o melhor vale mais),
-e a letra entra quando o lider se sustentou e abriu vantagem sobre o
-segundo. Um quadro isolado nao decide nada; uma pose mantida decide mesmo
-que cada quadro, sozinho, fosse ambiguo.
+O desenho de estabilidade tem tres partes, e as tres trabalham juntas:
+
+  1. **Votacao por quadro, sempre ligada.** Cada quadro, das regras ou do
+     classificador, vota nas suas leituras -- o candidato melhor com peso
+     maior, e todos os votos escalados pela confianca do quadro. A letra que
+     entra na frase e o lider da votacao, nao a leitura do ultimo quadro:
+     um piscar do classificador no exato quadro da decisao nao muda a letra.
+
+  2. **Permanencia vazada.** Um quadro ruim (letra vizinha ou sem leitura)
+     custa 1 de progresso em vez de zerar. O classificador piscar por um
+     quadro nao reinicia a corrida; uma troca sustentada de verdade chega a
+     zerar e comeca outra corrida.
+
+  3. **Sair para repetir.** Depois de aceitar uma letra, a corrida fica
+     "armada": ela so libera a proxima quando a leitura sai da letra aceita
+     (a mao solta a pose e volta). E assim que se escreve "AA" -- segurar e
+     soltar -- e nao "AAA", que sairia sozinho enquanto a pose se mantem.
+
+Algumas letras tem a MESMA pose e so a orientacao as separa (U/V, D/L,
+B/C). O reconhecedor devolve essas leituras como `candidates`; a votacao
+temporal decide, entao um quadro isolado nao decide nada e uma pose mantida
+decide mesmo que cada quadro, sozinho, fosse ambiguo.
 """
 from __future__ import annotations
 
@@ -25,9 +39,14 @@ from dataclasses import dataclass, field
 from ..signs.dactylology import LetterGuess
 
 
-def _rank_weight(rank: int) -> float:
-    """Peso do candidato pela posicao na leitura: 1, 1/2, 1/3, ..."""
-    return 1.0 / (rank + 1)
+def _rank_weight(rank: int, score: float) -> float:
+    """Peso de um candidato: pela posicao na leitura e pela confianca do quadro.
+
+    O melhor candidato do quadro vale `score`; o seguinte, metade disso, e
+    assim por diante. Assim um quadro confiante pesa mais que um duvidoso, e
+    dentro do quadro a ordem entre os candidatos e respeitada.
+    """
+    return float(max(0.0, score)) / (rank + 1)
 
 
 @dataclass
@@ -44,16 +63,17 @@ class Phrase:
 class PhraseBuilder:
     """Converte uma sequencia de leituras em texto.
 
-    A letra em leitura guarda a corrida atual. A contagem de permanencia e
-    'vazada': um quadro ruim (letra vizinha ou sem leitura) tira 1 de
-    progresso em vez de zerar, entao o classificador piscar por um frame nao
-    reinicia a letra. Uma troca sustentada zera e comeca a corrida nova.
+    Ver o docstring do modulo para o desenho de estabilidade. O essencial:
+    a corrida vota a cada quadro e a letra vem do lider dos votos, nao do
+    ultimo quadro; o `cooldown` conta em quadros de video (nao so quando a
+    mao some) e a repeticao exige soltar a pose.
     """
 
     def __init__(self, hold_frames: int = 5, cooldown: int = 8,
                  space_after: int = 12, min_score: float = 0.5,
                  max_len: int = 200, ambiguous_floor: float = 0.25,
-                 vote_margin: float = 1.5, min_votes: int | None = None):
+                 vote_margin: float = 0.6, min_votes: int | None = None,
+                 release_frames: int = 3):
         self.hold_frames = hold_frames
         self.cooldown = cooldown
         self.space_after = space_after
@@ -61,27 +81,32 @@ class PhraseBuilder:
         # score alto, precisa de consistencia entre quadros (votacao)
         self.min_score = min_score
         self.ambiguous_floor = ambiguous_floor
-        # o lider precisa de tantos votos quanto `hold_frames` e de vantagem
-        # minima sobre o segundo colocado
+        # o lider precisa de vantagem minima sobre o segundo colocado
         self.vote_margin = vote_margin
         self.min_votes = hold_frames if min_votes is None else min_votes
+        # quadros de "leitura fora da letra" que liberam a proxima letra
+        self.release_frames = release_frames
         self.max_len = max_len
         self._text: list = []
         self._hold = 0
         self._quiet = 0
         self._cooldown = 0
-        self._accepted = False
+        self._locked = False
         self._current: str | None = None
         self._tally: dict = {}          # letra -> peso acumulado na corrida
+        self._frames = 0                # quadros que votaram na corrida
+        self._away = 0                  # quadros consecutivos fora da letra
 
     # --- API ---
 
     def reset(self) -> None:
         self._text.clear()
         self._hold = self._quiet = self._cooldown = 0
-        self._accepted = False
+        self._locked = False
         self._current = None
         self._tally = {}
+        self._frames = 0
+        self._away = 0
 
     @property
     def text(self) -> str:
@@ -91,9 +116,11 @@ class PhraseBuilder:
         if self._text:
             self._text.pop()
         self._hold = self._quiet = self._cooldown = 0
-        self._accepted = False
+        self._locked = False
         self._current = None
         self._tally = {}
+        self._frames = 0
+        self._away = 0
 
     def confirm(self) -> None:
         """Forca a entrada da letra em leitura (tecla ESPACO).
@@ -108,46 +135,68 @@ class PhraseBuilder:
     def push(self, guess: LetterGuess | None) -> Phrase:
         """Acrescenta um quadro de leitura. Retorna o estado da frase.
 
-        O cooldown conta a partir do momento em que a mao sai da pose, nao
-        enquanto ela a mantem: e assim que se escreve "AA" (segurar a letra,
-        soltar, voltar) e nao "AAA" (a letra entrando sozinha).
+        Modelo de interacao: uma letra entra quando a pose se sustenta por
+        `hold_frames`. Depois de aceita, a corrida fica "travada" e so libera
+        a proxima quando a mao sai da pose por `release_frames` quadros -- e
+        assim que se escreve "AA" (soltar e refazer) sem virar "AAA".
         """
+        if self._cooldown > 0:
+            self._cooldown -= 1
+
         if guess is None or guess.score < self._floor(guess):
             return self._miss_frame(guess)
 
-        if guess.letter == self._current:
+        # corrida de uma letra ja aceita: fica travada ate a mao soltar a
+        # pose (ou trocar para outra letra por `release_frames` seguidos)
+        if self._locked:
+            if self._current is not None and guess.letter != self._current:
+                self._away += 1
+                if self._away >= self.release_frames:
+                    self._locked = False
+                    self._start(guess)
+            else:
+                self._away = 0
+            return self._state(guess)
+
+        if guess.letter == self._current and self._hold > 0:
+            # a leitura sustenta a corrida
             self._hold += 1
+            self._away = 0
             self._vote(guess)
         elif self._hold > 0:
-            # um quadro isolado fora da corrida nao derruba a leitura
-            # (o classificador pisca entre letras vizinhas); custa 1 de
-            # progresso em vez de zerar. Uma troca de verdade, sustentada,
-            # chega a zerar e comeca nova corrida.
+            # quadro lido como outra letra no meio da corrida: pode ser so um
+            # piscar do classificador. Vota nela mas cobra 1 de progresso em
+            # vez de zerar; uma troca sustentada chega a zerar e comeca outra.
             self._hold -= 1
+            self._vote(guess)
         else:
+            # a corrida morreu: comeca uma nova
             self._start(guess)
 
-        if self._hold >= self.hold_frames and not self._accepted:
+        if self._hold >= self.hold_frames and self._cooldown <= 0:
             letter = self._decide(guess)
             if letter is not None:
                 self._commit(letter)
-                self._quiet = 0
 
         return self._state(guess)
 
     # --- interno ---
 
     def _vote(self, guess: LetterGuess) -> None:
-        """Cada quadro vota nos seus candidatos, o melhor com peso maior."""
-        for rank, name in enumerate(guess.candidates or [guess.letter]):
-            self._tally[name] = self._tally.get(name, 0.0) + _rank_weight(rank)
+        """Cada quadro vota nos seus candidatos, ponderado pela confianca."""
+        cands = guess.candidates or [guess.letter]
+        self._frames += 1
+        for rank, name in enumerate(cands):
+            self._tally[name] = self._tally.get(name, 0.0) + _rank_weight(rank, guess.score)
 
     def _start(self, guess: LetterGuess) -> None:
         """Comeca uma corrida nova para a letra lida."""
         self._current = guess.letter
         self._hold = 1
-        self._accepted = False
+        self._locked = False
+        self._away = 0
         self._tally = {}
+        self._frames = 0
         self._vote(guess)
 
     def _floor(self, guess: LetterGuess) -> float:
@@ -160,15 +209,26 @@ class PhraseBuilder:
         return self.ambiguous_floor if guess.ambiguous else self.min_score
 
     def _decide(self, guess: LetterGuess) -> str | None:
-        """Qual letra entra depois da permanencia; None se ainda nao der."""
-        if not guess.ambiguous:
+        """Qual letra entra depois da permanencia; None se ainda nao der.
+
+        A letra vem do lider da votacao acumulada, nao do ultimo quadro: um
+        piscar do classificador no quadro da decisao nao muda o resultado.
+
+        Leitura inequivoca (um candidato) nao tem com o que votar: aceita
+        assim que a permanencia chega, como validado pelo chamador.
+
+        Leitura ambigua exige que o lider domine a votacao -- uma fracao
+        minima do total -- senao a pose esta genuinamente dividida entre as
+        letras (D/L, U/V, B/C) e nao se escreve nada. Isso e o que evita
+        "OLRLO" no lugar de "OLA".
+        """
+        if len(guess.candidates) <= 1 or not self._tally:
             return guess.letter
-        leader = guess.letter
-        lead = self._tally.get(leader, 0.0)
-        runner = max((v for k, v in self._tally.items() if k != leader), default=0.0)
-        if lead < self.min_votes:
+        leader, lead = max(self._tally.items(), key=lambda kv: kv[1])
+        total = sum(self._tally.values())
+        if self._frames < self.min_votes:
             return None
-        if runner > 0.0 and lead < self.vote_margin * runner:
+        if total > 0.0 and (lead / total) < self.vote_margin:
             return None
         return leader
 
@@ -178,11 +238,13 @@ class PhraseBuilder:
         self._text.append(letter)
         del self._text[:-self.max_len]
         self._hold = 0
-        self._accepted = True
+        self._locked = True             # so libera quando a mao sair da pose
         self._cooldown = self.cooldown
         self._quiet = 0
         self._current = letter
+        self._away = 0
         self._tally = {}
+        self._frames = 0
 
     def _miss_frame(self, guess: LetterGuess | None) -> Phrase:
         """Quadro sem leitura (mao sumiu, pose ambigua abaixo do piso).
@@ -193,15 +255,19 @@ class PhraseBuilder:
         self._quiet += 1
         if self._hold > 0:
             self._hold -= 1
+            self._away += 1
         else:
-            self._accepted = False
+            self._locked = False
             self._current = None
             self._tally = {}
+            self._frames = 0
+            self._away = 0
+        # soltar a mao tambem libera a repeticao da mesma letra
+        if self._locked and self._current is not None and self._away >= self.release_frames:
+            self._locked = False
         if self._quiet >= self.space_after and self._text and self._text[-1] != " ":
             self._text.append(" ")
             self._quiet = 0
-        if self._cooldown > 0:
-            self._cooldown -= 1
         return self._state(guess)
 
     def _state(self, guess: LetterGuess | None) -> Phrase:

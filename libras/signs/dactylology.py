@@ -23,6 +23,10 @@ from ..core.hand_tracker import FINGERS, FINGERS_4, Hand
 
 # --- descricao das letras -------------------------------------------------
 
+# Corte de curvatura (curl medio dos 4 dedos) que separa B (retos) de C (arco
+# suave). Calibrado no data/samples.npz: acerta ~94% das amostras de B e C.
+ARC_BC = 0.065
+
 # polegar
 TL, TD, TC, TA, TX = "lateral", "dobrado", "c", "apoiado", "cruz"
 
@@ -208,7 +212,60 @@ def _recognise_model(f: HandFeatures, history, classifier) -> LetterGuess | None
         if rules is not None and any(c in _MOTION_ONLY for c in rules.candidates):
             return rules
     guess = classifier.to_guess(f.vector())
-    return guess if guess.candidates else None
+    if not guess.candidates:
+        return None
+    return _disambiguate(f, guess)
+
+
+# C e L sao as duas letras que o classificador mais troca em maos reais, porque
+# dependem de um dedo que muda com a pose: C vira F quando o indicador fecha, L
+# vira M quando os outros dedos relaxam. As duas trocas tem uma feature
+# geometrica forte por tras, entao aqui a geometria manda quando o modelo
+# contradiz o que a mao esta fazendo de fato.
+_INDEX_CURL_F = 0.45      # acima disso o indicador esta dobrado: e F, nao C
+_INDEX_CURL_L = 0.35      # L tem o indicador estendido; M nao
+_PINKY_CURL_L = 0.45      # L tem o mindinho dobrado; M tambem, mas junto ao resto
+
+
+def _disambiguate(f: HandFeatures, guess: LetterGuess) -> LetterGuess:
+    """Corrige trocas do classificador que a geometria desmente.
+
+    So age nas duas confusoes medidas (C<->F e L<->M) e so quando o modelo
+    votou numa delas; fora disso devolve a leitura como veio.
+    """
+    letra = guess.letter
+    idx = float(f.curl[1])
+    outros = f.curl[2:]
+
+    if letra == "F" and idx < _INDEX_CURL_F and float(outros.mean()) < 0.4:
+        # indicador reto com os outros abertos: e a pose de C, nao F
+        return LetterGuess(letter="C", score=guess.score,
+                           candidates=_swap(guess.candidates, "F", "C"))
+    if letra == "C" and idx >= _INDEX_CURL_F:
+        # indicador fechado: a pose virou F
+        return LetterGuess(letter="F", score=guess.score,
+                           candidates=_swap(guess.candidates, "C", "F"))
+    if letra == "M" and idx < _INDEX_CURL_L and float(f.curl[4]) < _PINKY_CURL_L:
+        # indicador estendido: e L (o M dobra o indicador junto ao punho)
+        return LetterGuess(letter="L", score=guess.score,
+                           candidates=_swap(guess.candidates, "M", "L"))
+    if letra == "L" and idx >= _INDEX_CURL_L and float(f.curl[4]) >= _PINKY_CURL_L:
+        # indicador dobrado e mindinho fechado: e M
+        return LetterGuess(letter="M", score=guess.score,
+                           candidates=_swap(guess.candidates, "L", "M"))
+    return guess
+
+
+def _swap(candidates: list, velho: str, novo: str) -> list:
+    """Troca `velho` por `novo` na lista de candidatos, sem duplicar."""
+    out = []
+    for c in candidates:
+        c2 = novo if c == velho else c
+        if c2 not in out:
+            out.append(c2)
+    if novo not in out:
+        out.insert(0, novo)
+    return out
 
 
 def _recognise_rules(f: HandFeatures, history=None) -> LetterGuess | None:
@@ -220,8 +277,10 @@ def _recognise_rules(f: HandFeatures, history=None) -> LetterGuess | None:
     upright = _upright(f)
     spread = _spread_index_middle(f)
     # curvatura media dos quatro dedos (indicador a mininho): e o que separa B
-    # (retos) de C (em arco). Medido com a mao real, B fica em 0.05-0.16 e C em
-    # 0.18-0.35, entao 0.17 cai no vao entre os dois.
+    # (retos) de C (em arco). Medido no data/samples.npz: B fica em ~0.025-0.056
+    # (mediana 0.043) e C em ~0.042-0.193 (mediana 0.111). O corte que mais
+    # acerta os dois e ~0.065 (acerta 94% das amostras); 0.17 jogava quase todo
+    # C para B, porque o C real e um arco bem mais suave do que parecia.
     arc = float(f.curl[1:].mean())
 
     # desempate dentro do mesmo padrao de dedos
@@ -244,9 +303,9 @@ def _recognise_rules(f: HandFeatures, history=None) -> LetterGuess | None:
         if l.name in ("B", "C"):
             # B e C compartilham a pose-base (quatro dedos para fora da palma) e o
             # polegar costuma sair lateral nos dois; o que os separa e a
-            # curvatura: B retos, C em arco. Corte decisivo em 0.17 (no vao
-            # medido), com o polegar so como empurrao.
-            arched = arc > 0.17
+            # curvatura: B retos, C em arco. Corte em ARC_BC (calibrado no
+            # dataset), com o polegar so como empurrao.
+            arched = arc > ARC_BC
             if l.name == "C":
                 s += 0.4 if arched else -0.4
                 s += 0.1 if thumb == TC else 0.0
@@ -295,7 +354,7 @@ def _recognise_rules(f: HandFeatures, history=None) -> LetterGuess | None:
     # sem isso, arco apertado virava A e arco medio virava B.
     if pattern == (1, 1, 1, 1):
         same = [l for l in LETTERS if l.name in ("B", "C")]
-    elif tuple(out) == (1, 1, 1, 1) and arc > 0.25:
+    elif tuple(out) == (1, 1, 1, 1) and arc > ARC_BC:
         same = [l for l in LETTERS if l.name == "C"]
     elif pattern == (1, 0, 0, 0):
         # D e L so diferem pelo polegar; junta os dois e deixa o `refine`
