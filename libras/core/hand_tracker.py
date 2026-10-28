@@ -38,6 +38,7 @@ sem girar, a presenca cai de 0.99 para 0.16-0.31.
 from __future__ import annotations
 
 import math
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -183,8 +184,8 @@ class Palm:
 
     cx: float
     cy: float
-    side: float          # lado da caixa da palma, em px do canvas de 192
-    angle: float         # graus
+    side: float  # lado da caixa da palma, em px do canvas de 192
+    angle: float  # graus
     score: float
     scale_x: float = 1.0  # px_da_imagem por px_do_canvas, no eixo x
     scale_y: float = 1.0
@@ -195,7 +196,7 @@ class _Track:
     """Esqueleto do quadro anterior, para suavizar o tremor da deteccao."""
 
     landmarks: np.ndarray
-    mid: np.ndarray   # ponto medio pulso -> metacarpal do medio
+    mid: np.ndarray  # ponto medio pulso -> metacarpal do medio
     presence: float
     handedness: float
     hits: int = 1
@@ -215,6 +216,7 @@ class HandTracker:
         smoothing: float = 0.5,
         max_coast: int = 4,
         num_threads: int = 4,
+        palm_every: int = 1,
     ):
         from ai_edge_litert.interpreter import Interpreter
 
@@ -228,9 +230,14 @@ class HandTracker:
         # quantos quadros sem deteccao a ultima mao ainda e devolvida, para o
         # detector piscar sem picar a leitura (0 desliga a ponte)
         self.max_coast = max_coast
+        # rodar o detector de palma a cada N quadros (com a mao seguida, a ROI
+        # da palma anterior continua valida por alguns quadros; o landmarker
+        # roda em todo quadro de qualquer forma). 1 = todo quadro.
+        self.palm_every = max(1, palm_every)
 
-        self._palm_it = Interpreter(model_path=str(path.parent / "hand_detector.tflite"),
-                                    num_threads=num_threads)
+        self._palm_it = Interpreter(
+            model_path=str(path.parent / "hand_detector.tflite"), num_threads=num_threads
+        )
         self._palm_it.allocate_tensors()
         self._palm_in = self._palm_it.get_input_details()[0]
         palm_outs = self._palm_it.get_output_details()
@@ -247,6 +254,9 @@ class HandTracker:
 
         self._tracks: list = []
         self._last_hands: list = []
+        self._last_palms: list = []
+        self._last_had_hands = False
+        self._frame_i = 0
         self._misses = 0
         self._frame_shape = (0, 0, 3)
 
@@ -254,7 +264,7 @@ class HandTracker:
         self._it = None
         self._palm_it = None
 
-    def __enter__(self) -> "HandTracker":
+    def __enter__(self) -> typing.Self:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -263,6 +273,8 @@ class HandTracker:
     def reset(self) -> None:
         self._tracks = []
         self._last_hands = []
+        self._last_palms = []
+        self._last_had_hands = False
         self._misses = 0
 
     # ---------------- deteccao de palma ----------------
@@ -278,10 +290,12 @@ class HandTracker:
         import cv2
 
         h, w = frame.shape[:2]
-        blob = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0,
-                          (PALM_CANVAS, PALM_CANVAS), interpolation=cv2.INTER_LINEAR)
-        self._palm_it.set_tensor(self._palm_in["index"],
-                                 np.ascontiguousarray(blob)[None, ...])
+        blob = cv2.resize(
+            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0,
+            (PALM_CANVAS, PALM_CANVAS),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        self._palm_it.set_tensor(self._palm_in["index"], np.ascontiguousarray(blob)[None, ...])
         self._palm_it.invoke()
         raw = self._palm_it.get_tensor(self._palm_boxes["index"])[0]
         logits = self._palm_it.get_tensor(self._palm_scores["index"])[0].ravel()
@@ -313,18 +327,35 @@ class HandTracker:
                 continue
             side = max(bw, bh)
             pcx, pcy = (xmin + xmax) / 2, (ymin + ymax) / 2
-            if any(math.hypot(pcx - q["cx"], pcy - q["cy"])
-                   < 0.5 * max(side, q["side"]) for q in found):
+            if any(
+                math.hypot(pcx - q["cx"], pcy - q["cy"]) < 0.5 * max(side, q["side"]) for q in found
+            ):
                 continue
-            found.append({"cx": pcx, "cy": pcy, "side": side,
-                          "angle": -math.degrees(math.atan2(vx, -vy)), "score": p})
+            found.append(
+                {
+                    "cx": pcx,
+                    "cy": pcy,
+                    "side": side,
+                    "angle": -math.degrees(math.atan2(vx, -vy)),
+                    "score": p,
+                }
+            )
             if len(found) >= self.max_hands * 3:
                 break
 
         scale_x, scale_y = w / PALM_CANVAS, h / PALM_CANVAS
-        return [Palm(cx=d["cx"] * scale_x, cy=d["cy"] * scale_y, side=d["side"],
-                     angle=d["angle"], score=d["score"], scale_x=scale_x, scale_y=scale_y)
-                for d in found]
+        return [
+            Palm(
+                cx=d["cx"] * scale_x,
+                cy=d["cy"] * scale_y,
+                side=d["side"],
+                angle=d["angle"],
+                score=d["score"],
+                scale_x=scale_x,
+                scale_y=scale_y,
+            )
+            for d in found
+        ]
 
     # ---------------- landmarks na ROI ----------------
 
@@ -353,12 +384,21 @@ class HandTracker:
         m = cv2.getRotationMatrix2D((cx, cy), palm.angle, 1.0)
         m[0, 2] += rw / 2.0 - cx
         m[1, 2] += rh / 2.0 - cy
-        crop = cv2.warpAffine(frame, m, (rw, rh), flags=cv2.INTER_LINEAR,
-                              borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        crop = cv2.warpAffine(
+            frame,
+            m,
+            (rw, rh),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
         if min(crop.shape[:2]) < 16:
             return None
-        blob = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0,
-                          (LANDMARK_CANVAS, LANDMARK_CANVAS), interpolation=cv2.INTER_LINEAR)
+        blob = cv2.resize(
+            cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0,
+            (LANDMARK_CANVAS, LANDMARK_CANVAS),
+            interpolation=cv2.INTER_LINEAR,
+        )
 
         self._it.set_tensor(self._in["index"], np.ascontiguousarray(blob)[None, ...])
         self._it.invoke()
@@ -435,9 +475,16 @@ class HandTracker:
             score -= 0.5
 
         # ossos vizinhos nao podem diferir em mais de ~12x (o dobro do medido)
-        bones = [(WRIST, MIDDLE_MCP), (MIDDLE_MCP, MIDDLE_PIP), (MIDDLE_PIP, MIDDLE_TIP),
-                 (INDEX_MCP, INDEX_PIP), (INDEX_PIP, INDEX_TIP), (PINKY_MCP, PINKY_TIP),
-                 (PINKY_MCP, PINKY_PIP), (PINKY_PIP, PINKY_TIP)]
+        bones = [
+            (WRIST, MIDDLE_MCP),
+            (MIDDLE_MCP, MIDDLE_PIP),
+            (MIDDLE_PIP, MIDDLE_TIP),
+            (INDEX_MCP, INDEX_PIP),
+            (INDEX_PIP, INDEX_TIP),
+            (PINKY_MCP, PINKY_TIP),
+            (PINKY_MCP, PINKY_PIP),
+            (PINKY_PIP, PINKY_TIP),
+        ]
         lens = [float(np.linalg.norm(px[a] - px[b])) for a, b in bones]
         if min(lens) < 1e-3:
             return 0.0
@@ -448,9 +495,11 @@ class HandTracker:
             score -= 0.3
 
         # dedos nao sao uma regua: matriz rastreada, so penaliza muito
-        for base, pip, tip in ((INDEX_MCP, INDEX_PIP, INDEX_TIP),
-                               (MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP),
-                               (PINKY_MCP, PINKY_PIP, PINKY_TIP)):
+        for base, pip, tip in (
+            (INDEX_MCP, INDEX_PIP, INDEX_TIP),
+            (MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP),
+            (PINKY_MCP, PINKY_PIP, PINKY_TIP),
+        ):
             b = float(np.linalg.norm(px[base] - px[pip]))
             t = float(np.linalg.norm(px[pip] - px[tip]))
             if b < 1e-3:
@@ -463,8 +512,12 @@ class HandTracker:
         # fechado (o que dobra e a partir do PIP): coseno minimo de +0.99 na
         # foto de teste contra <= +0.06 em 21 pontos jogados ao acaso. E o que
         # separa ruido do detector de um esqueleto de verdade.
-        pairs = ((INDEX_MCP, INDEX_PIP), (MIDDLE_MCP, MIDDLE_PIP),
-                 (RING_MCP, RING_PIP), (PINKY_MCP, PINKY_PIP))
+        pairs = (
+            (INDEX_MCP, INDEX_PIP),
+            (MIDDLE_MCP, MIDDLE_PIP),
+            (RING_MCP, RING_PIP),
+            (PINKY_MCP, PINKY_PIP),
+        )
         dirs = np.array([px[b] - px[a] for a, b in pairs], np.float32)
         norms = np.linalg.norm(dirs, axis=1)
         if norms.min() < 1e-3:
@@ -477,8 +530,9 @@ class HandTracker:
             score -= 0.3
 
         # a mao nao pode estar metade fora do quadro
-        out = ((lm[:, 0] < -0.05) | (lm[:, 0] > 1.05) |
-               (lm[:, 1] < -0.05) | (lm[:, 1] > 1.05)).mean()
+        out = (
+            (lm[:, 0] < -0.05) | (lm[:, 0] > 1.05) | (lm[:, 1] < -0.05) | (lm[:, 1] > 1.05)
+        ).mean()
         if out > 0.3:
             score -= 0.6
 
@@ -502,7 +556,15 @@ class HandTracker:
 
     def process(self, frame: np.ndarray) -> list:
         self._frame_shape = frame.shape
-        palms = self.detect_palms(frame)
+        self._frame_i += 1
+        # Com a mao seguida, a ROI da palma anterior continua valida por
+        # alguns quadros: reusa-la pula o detector de palma (o custo
+        # dominante) e roda so o landmarker no quadro atual. Mao ausente ou
+        # perdida no quadro anterior forca a deteccao, para achar quem entra.
+        reusar = self.palm_every > 1 and self._last_palms and self._last_had_hands
+        if not reusar or self._frame_i % self.palm_every == 0:
+            self._last_palms = self.detect_palms(frame)
+        palms = self._last_palms
 
         hands: list = []
         if palms:
@@ -522,7 +584,7 @@ class HandTracker:
             # a mesma mao pode ser achada por varias palmas (duas ancoras com
             # caixas parecidas): fica a de maior presenca
             found.sort(key=lambda r: -r[1])
-            for p, presence, handed, lm, box, q in found:
+            for _p, presence, handed, lm, box, _q in found:
                 if any(self._landmarks_overlap(lm, h.landmarks) > 0.5 for h in hands):
                     continue
                 hands.append(Hand(lm, presence, handed, box, 0.0))
@@ -535,8 +597,10 @@ class HandTracker:
         if hands:
             self._misses = 0
             self._last_hands = hands
+            self._last_had_hands = True
             return hands
 
+        self._last_had_hands = False
         # Nada valido neste quadro. O detector de palma e o `_quality` piscam
         # (a mao some por um quadro, a pose de perfil cai abaixo do limiar), e
         # devolver [] picaria a leitura. Segura a ultima mao por alguns quadros,
@@ -545,8 +609,10 @@ class HandTracker:
         self._misses += 1
         if self._last_hands and self._misses <= self.max_coast:
             decay = 1.0 - self._misses / (self.max_coast + 1.0)
-            return [Hand(h.landmarks.copy(), float(h.presence * decay),
-                         h.handedness, h.box, h.smooth) for h in self._last_hands]
+            return [
+                Hand(h.landmarks.copy(), float(h.presence * decay), h.handedness, h.box, h.smooth)
+                for h in self._last_hands
+            ]
         self._tracks = []
         self._last_hands = []
         return []
@@ -568,12 +634,12 @@ class HandTracker:
                 if d < best_d:
                     best, best_d = tr, d
             if best is not None and best_d < 0.12:
-                h.landmarks = (self.smoothing * best.landmarks
-                               + (1.0 - self.smoothing) * h.landmarks).astype(np.float32)
+                h.landmarks = (
+                    self.smoothing * best.landmarks + (1.0 - self.smoothing) * h.landmarks
+                ).astype(np.float32)
                 hits = best.hits + 1
             else:
                 hits = 1
             h.smooth = min(1.0, hits / 5.0)
-            tracks.append(_Track(h.landmarks, mid, h.presence, h.handedness,
-                                 hits=hits))
+            tracks.append(_Track(h.landmarks, mid, h.presence, h.handedness, hits=hits))
         self._tracks = tracks

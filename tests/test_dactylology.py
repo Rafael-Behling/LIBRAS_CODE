@@ -5,6 +5,7 @@ Libras: ele produz a geometria de 21 pontos que as regras esperam. O que
 estes testes fixam e a logica de desempate -- quais pares de letras
 compartilham a mesma pose e como o classificador lida com isso.
 """
+
 import sys
 import unittest
 from pathlib import Path
@@ -33,7 +34,7 @@ THUMB = {
 
 def pose(letter, **kw):
     """Pose sintetica correspondente a uma letra da tabela."""
-    spec = next(l for l in LETTERS if l.name == letter)
+    spec = next(let for let in LETTERS if let.name == letter)
     curl = [1.0] * 5
     for i, up in enumerate(spec.fingers):
         curl[i + 1] = 0.0 if up else 1.0
@@ -43,10 +44,10 @@ def pose(letter, **kw):
 
 class TestDactylologyRules(unittest.TestCase):
     def test_reads_poses_without_crashing(self):
-        for l in LETTERS:
-            with self.subTest(letter=l.name):
-                g = recognise(pose(l.name))
-                self.assertIsNotNone(g, f"{l.name} nao produziu leitura")
+        for let in LETTERS:
+            with self.subTest(letter=let.name):
+                g = recognise(pose(let.name))
+                self.assertIsNotNone(g, f"{let.name} nao produziu leitura")
                 self.assertIn(g.letter, [x.name for x in LETTERS])
                 self.assertGreaterEqual(g.score, 0.0)
                 self.assertLessEqual(g.score, 1.0)
@@ -58,17 +59,16 @@ class TestDactylologyRules(unittest.TestCase):
         for name in ("B", "F", "N", "O", "P", "R", "S", "T", "W", "X"):
             with self.subTest(letter=name):
                 g = recognise(pose(name))
-                self.assertIn(name, g.candidates,
-                              f"{name}: esperado entre os candidatos, "
-                              f"veio {g.candidates}")
+                self.assertIn(
+                    name, g.candidates, f"{name}: esperado entre os candidatos, veio {g.candidates}"
+                )
 
     def test_ambiguity_is_reported_not_guessed(self):
         """A/I/G tem a mesma pose. O modulo tem de dizer que nao sabe, em vez
         de escolher uma e presentsa como certeza."""
         hand = pose("I")
         g = recognise(hand)
-        self.assertGreater(len(g.candidates), 1,
-                           f"esperava ambiguidade, veio {g.candidates}")
+        self.assertGreater(len(g.candidates), 1, f"esperava ambiguidade, veio {g.candidates}")
         self.assertTrue(g.ambiguous)
         self.assertFalse(g.confident)
 
@@ -85,8 +85,9 @@ class TestDactylologyRules(unittest.TestCase):
         abertos = recognise(pose("V", spread=25.0))
         self.assertIsNotNone(juntos)
         self.assertIsNotNone(abertos)
-        self.assertNotEqual(juntos.candidates, abertos.candidates,
-                            "espacamento nao mudou a leitura")
+        self.assertNotEqual(
+            juntos.candidates, abertos.candidates, "espacamento nao mudou a leitura"
+        )
 
     def test_arch_distinguishes_c_from_b(self):
         """C e B tem os quatro dedos fora da palma e, na leitura real, o mesmo
@@ -98,19 +99,22 @@ class TestDactylologyRules(unittest.TestCase):
         self.assertIn("B", gb.candidates)
         self.assertNotIn("C", gb.candidates, "B reto lido como C")
 
-        # Na mao real o corte fica em arc ~0.17: B medido em 0.02-0.16 e C em
-        # 0.18-0.41. `make_pose` rende arc ~= 1.63*curl, entao 0.10 (arc ~0.16)
-        # ainda e B e 0.12 (arc ~0.20) ja e C -- trava a fronteira.
-        g10 = recognise(make_pose(curl=(0.0, 0.10, 0.10, 0.10, 0.10), thumb_spread=0.0))
-        self.assertEqual("B", g10.letter,
-                         f"curvatura rasa (arc~0.16) devia ser B, veio {g10.letter}")
+        # Corte calibrado em data/samples.npz (ver ARC_BC em dactylology):
+        # B real fica em arc 0.025-0.056 (p90 0.056) e C em 0.070-0.193
+        # (p10 0.070); o corte otimo e 0.065 (95% dos dois). `make_pose`
+        # rende arc ~= 1.63*curl, entao curl 0.02 (arc ~0.033) e B e
+        # curl 0.05 (arc ~0.082) ja e C -- trava a fronteira.
+        g10 = recognise(make_pose(curl=(0.0, 0.02, 0.02, 0.02, 0.02), thumb_spread=0.0))
+        self.assertEqual(
+            "B", g10.letter, f"curvatura rasa (arc~0.033) devia ser B, veio {g10.letter}"
+        )
 
-        for c in (0.12, 0.20, 0.35):
+        for c in (0.05, 0.12, 0.20, 0.35):
             with self.subTest(curl=c):
                 gc = recognise(make_pose(curl=(0.0, c, c, c, c), thumb_spread=0.0))
-                self.assertEqual("C", gc.letter,
-                                 f"C em arco (curl={c}) lido como {gc.letter} "
-                                 f"{gc.candidates}")
+                self.assertEqual(
+                    "C", gc.letter, f"C em arco (curl={c}) lido como {gc.letter} {gc.candidates}"
+                )
 
     def test_gap_separates_d_from_l(self):
         """D e L tem a mesma pose de dedos (so o indicador estendido, resto no
@@ -129,11 +133,9 @@ class TestDactylologyRules(unittest.TestCase):
         gd = recognise(pose("D"))
         self.assertEqual("D", gd.letter, f"D (polegar apoiado) veio {gd.candidates}")
 
-        d_c = make_pose(curl=(0.5, 0.0, 0.9, 0.9, 0.9),
-                        thumb_dir=30, thumb_spread=-0.6)
+        d_c = make_pose(curl=(0.5, 0.0, 0.9, 0.9, 0.9), thumb_dir=30, thumb_spread=-0.6)
         gc = recognise(d_c)
-        self.assertEqual("D", gc.letter,
-                         f"D com polegar 'c' (caso real) veio {gc.candidates}")
+        self.assertEqual("D", gc.letter, f"D com polegar 'c' (caso real) veio {gc.candidates}")
 
     def test_history_disambiguates_motion_letters(self):
         """J e Z so existem como movimento. Com historico parado nao podem ser
@@ -155,14 +157,44 @@ class TestDactylologyRules(unittest.TestCase):
         movido = recognise(pose("I"), hist2)
         self.assertIsNotNone(movido)
 
+    def test_fast_transition_does_not_vote(self):
+        """Mao voando entre duas poses nao tem letra: votar no meio da
+        transicao enchia a frase de lixo quando se datilologava o alfabeto em
+        sequencia. O teste de movimento e pelo caminho RECENTE (ultimos 4
+        quadros) -- a janela inteira acumulava transicoes antigas e mantinha o
+        reconhecedor preso nas regras fracas em vez do classificador."""
+        hist = HandHistory()
+        for k in range(12):
+            h = pose("B")
+            h.landmarks = h.landmarks + np.array(
+                [0.05 * k, 0, 0], dtype="float32")
+            g = recognise(h, hist)
+            hist.push(h, k / 30.0)
+        self.assertIsNone(g, f"transicao rapida votou: {g}")
+
+    def test_dynamic_letter_held_still_reads_by_rules(self):
+        """H e K seguradas paradas: o modelo estatico nunca as viu e chutaria a
+        vizinha (U/V); as regras reconhecem a geometria delas e sao quem manda,
+        movida ou nao a mao."""
+        for name in ("H", "K"):
+            with self.subTest(letter=name):
+                hist = HandHistory()
+                g = None
+                for k in range(10):
+                    h = pose(name)
+                    g = recognise(h, hist)
+                    hist.push(h, k / 30.0)
+                self.assertIsNotNone(g)
+                self.assertIn(name, g.candidates,
+                              f"{name} parada veio {g.letter} {g.candidates}")
+
     def test_closed_fist_is_not_a_letter_without_thumb_info(self):
         g = recognise(pose("E"))
         self.assertIsNotNone(g)
         self.assertLessEqual(len(g.candidates), 3)
 
 
-import numpy as np  # noqa: E402  (usado só em test_history)
-
+import numpy as np
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

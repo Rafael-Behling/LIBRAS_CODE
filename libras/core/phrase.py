@@ -32,6 +32,7 @@ B/C). O reconhecedor devolve essas leituras como `candidates`; a votacao
 temporal decide, entao um quadro isolado nao decide nada e uma pose mantida
 decide mesmo que cada quadro, sozinho, fosse ambiguo.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -52,12 +53,12 @@ def _rank_weight(rank: int, score: float) -> float:
 @dataclass
 class Phrase:
     text: str = ""
-    current: str | None = None          # letra em leitura, ainda nao aceita
+    current: str | None = None  # letra em leitura, ainda nao aceita
     current_score: float = 0.0
     candidates: list = field(default_factory=list)
     needs: str = ""
-    votes: list = field(default_factory=list)      # [(letra, peso), ...]
-    confidence: float = 0.0                        # lider / total, 0..1
+    votes: list = field(default_factory=list)  # [(letra, peso), ...]
+    confidence: float = 0.0  # lider / total, 0..1
 
 
 class PhraseBuilder:
@@ -69,11 +70,18 @@ class PhraseBuilder:
     mao some) e a repeticao exige soltar a pose.
     """
 
-    def __init__(self, hold_frames: int = 5, cooldown: int = 8,
-                 space_after: int = 12, min_score: float = 0.5,
-                 max_len: int = 200, ambiguous_floor: float = 0.25,
-                 vote_margin: float = 0.6, min_votes: int | None = None,
-                 release_frames: int = 3):
+    def __init__(
+        self,
+        hold_frames: int = 5,
+        cooldown: int = 8,
+        space_after: int = 12,
+        min_score: float = 0.5,
+        max_len: int = 200,
+        ambiguous_floor: float = 0.25,
+        vote_margin: float = 0.6,
+        min_votes: int | None = None,
+        release_frames: int = 3,
+    ):
         self.hold_frames = hold_frames
         self.cooldown = cooldown
         self.space_after = space_after
@@ -93,9 +101,9 @@ class PhraseBuilder:
         self._cooldown = 0
         self._locked = False
         self._current: str | None = None
-        self._tally: dict = {}          # letra -> peso acumulado na corrida
-        self._frames = 0                # quadros que votaram na corrida
-        self._away = 0                  # quadros consecutivos fora da letra
+        self._tally: dict = {}  # letra -> peso acumulado na corrida
+        self._frames = 0  # quadros que votaram na corrida
+        self._away = 0  # quadros consecutivos fora da letra
 
     # --- API ---
 
@@ -111,6 +119,11 @@ class PhraseBuilder:
     @property
     def text(self) -> str:
         return "".join(self._text)
+
+    @property
+    def hold_progress(self) -> int:
+        """Quadros ja sustentados na corrida atual (o anel de progresso do HUD)."""
+        return self._hold
 
     def backspace(self) -> None:
         if self._text:
@@ -236,9 +249,9 @@ class PhraseBuilder:
         # Nao se remove o espaco final antes de escrever: o usuario precisa
         # ver onde a palavra terminou, senao "OLA " e "OLA" ficam idênticos.
         self._text.append(letter)
-        del self._text[:-self.max_len]
+        del self._text[: -self.max_len]
         self._hold = 0
-        self._locked = True             # so libera quando a mao sair da pose
+        self._locked = True  # so libera quando a mao sair da pose
         self._cooldown = self.cooldown
         self._quiet = 0
         self._current = letter

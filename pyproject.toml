@@ -1,0 +1,31 @@
+[project]
+name = "libras-code"
+version = "0.2.0"
+description = "Reconhecimento de datilologia Libras (A-Z) pela webcam"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+    "ai-edge-litert>=2.0",
+    "pillow>=10.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "S", "BLE"]
+ignore = [
+    "RUF046", # int() de valores que o linter acredita inteiros: guardas uteis
+    "RUF057", # round() sobre inteiro: idem
+    "RUF007", # zip em pares sucessivos e o estilo do projeto
+    "S110",   # try/except-pass só sobrevive onde a exceção não importa
+    "BLE001", # except Exception deliberado em fronteiras de usuario
+]
+
+[tool.ruff.lint.per-file-ignores]
+# tests/tools inserem o diretorio raiz no sys.path antes de importar o pacote
+"tests/*" = ["S101", "E402"]
+"tools/*" = ["E402"]
+"app.py" = ["E402"]

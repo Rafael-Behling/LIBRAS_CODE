@@ -10,12 +10,41 @@ MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
+DOWNLOAD_TIMEOUT = 30.0
 
 # (nome dentro do .task, tamanho minimo em bytes para considerar valido)
 NEEDED = (
     ("hand_detector.tflite", 1_000_000),
     ("hand_landmarks_detector.tflite", 1_000_000),
 )
+
+
+def _task_valido(task_file: Path) -> bool:
+    """O .task e um zip com os dois .tflite dentro.
+
+    Um download interrompido deixa um arquivo truncado que `ZipFile` nao abre
+    (ou abre sem os membros); validar aqui evita que a primeira execucao
+    quebrada contamine todas as seguintes com um .task ruim em disco.
+    """
+    try:
+        with zipfile.ZipFile(task_file) as z:
+            nomes = z.namelist()
+        return all(any(n.endswith(nome) for n in nomes) for nome, _ in NEEDED)
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def _baixar(task_file: Path) -> None:
+    req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "libras-code"})
+    with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as r, open(task_file, "wb") as f:  # noqa: S310 (URL fixa e https)
+        while True:
+            bloco = r.read(1 << 16)
+            if not bloco:
+                break
+            f.write(bloco)
+    if not _task_valido(task_file):
+        task_file.unlink(missing_ok=True)
+        raise RuntimeError("download do hand_landmarker.task veio corrompido; rode de novo")
 
 
 def ensure_models(models_dir: Path | str = "models") -> Path:
@@ -33,8 +62,8 @@ def ensure_models(models_dir: Path | str = "models") -> Path:
         return targets[-1][0]
 
     task_file = models_dir / "hand_landmarker.task"
-    if not task_file.exists():
-        urllib.request.urlretrieve(MODEL_URL, task_file)
+    if not task_file.exists() or not _task_valido(task_file):
+        _baixar(task_file)
 
     with zipfile.ZipFile(task_file) as z:
         names = z.namelist()

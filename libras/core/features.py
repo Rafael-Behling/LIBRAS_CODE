@@ -10,6 +10,7 @@ Duas escalas, de proposito:
 Todas as medidas sao derivadas dos 21 landmarks, entao valem tanto para
 datilologia quanto para sinais do vocabulario.
 """
+
 from __future__ import annotations
 
 import math
@@ -18,19 +19,19 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .hand_tracker import (
+    FINGER_CHAINS,
     FINGERS,
     FINGERS_4,
-    FINGER_CHAINS,
+    INDEX_DIP,
     INDEX_MCP,
-    INDEX_PIP,
     INDEX_TIP,
+    MIDDLE_DIP,
     MIDDLE_MCP,
-    MIDDLE_PIP,
     MIDDLE_TIP,
+    PINKY_DIP,
     PINKY_MCP,
-    PINKY_PIP,
     PINKY_TIP,
-    RING_MCP,
+    RING_DIP,
     RING_TIP,
     THUMB_IP,
     THUMB_MCP,
@@ -39,14 +40,9 @@ from .hand_tracker import (
     Hand,
 )
 
-
-# Sequencias dos dedos, da base a ponta, para as diferencas de segunda ordem
-_CHAIN4 = {
-    "index": (INDEX_MCP, INDEX_PIP, INDEX_TIP, None),
-    "middle": (MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP, None),
-    "ring": (RING_MCP, None, RING_TIP, None),
-    "pinky": (PINKY_MCP, PINKY_PIP, PINKY_TIP, None),
-}
+# Articulacao DIP de cada dedo: o angulo da dobradilha distal e medido aqui,
+# entre PIP -> DIP -> TIP (nao na ponta, onde o vetor colapsa a zero).
+_DIP_OF = {"index": INDEX_DIP, "middle": MIDDLE_DIP, "ring": RING_DIP, "pinky": PINKY_DIP}
 
 _TIP_OF = {"index": INDEX_TIP, "middle": MIDDLE_TIP, "ring": RING_TIP, "pinky": PINKY_TIP}
 
@@ -56,37 +52,41 @@ class HandFeatures:
     """Pose de uma mao, independente de onde ela esta no frame."""
 
     # dobradilha de cada dedo, 0 estendido -> 1 dobrado
-    curl: np.ndarray               # (5,) thumb, index, middle, ring, pinky
+    curl: np.ndarray  # (5,) thumb, index, middle, ring, pinky
     # angulo de cada articulacao, em graus
-    angles: np.ndarray             # (4, 2) PIP e DIP de index..pinky
-    thumb_angles: np.ndarray       # (2,) IP e spread
+    angles: np.ndarray  # (4, 2) PIP e DIP de index..pinky
+    thumb_angles: np.ndarray  # (2,) IP e spread
     # posicao de cada ponta relativa ao pulso, em unidades de tamanho de mao
-    tips: np.ndarray               # (5, 2)
+    tips: np.ndarray  # (5, 2)
     # distancia de cada ponta ao pulso, normalizada
-    tip_radius: np.ndarray         # (5,)
+    tip_radius: np.ndarray  # (5,)
     # posicao de cada ponta no referencial da mao (eixo x = indicador->mininho)
-    tips_local: np.ndarray         # (5, 2)
+    tips_local: np.ndarray  # (5, 2)
     # orientacao da mao e inclinacao do plano
-    orientation: float             # graus, pulso -> meio da mao
-    plane_tilt: float              # graus, quanto a palma esta de frente para a camera
+    orientation: float  # graus, pulso -> meio da mao
+    plane_tilt: float  # graus, quanto a palma esta de frente para a camera
     # comprimento de cada dedo em unidades de tamanho de mao
-    finger_len: np.ndarray         # (5,)
+    finger_len: np.ndarray  # (5,)
 
     def vector(self) -> np.ndarray:
         """Vetor plano para classificadores lineares / MLP."""
-        return np.concatenate([
-            self.curl,
-            self.angles.ravel() / 180.0,
-            self.thumb_angles / 180.0,
-            self.tips.ravel(),
-            self.tip_radius,
-            self.tips_local.ravel(),
-            [math.sin(math.radians(self.orientation)),
-             math.cos(math.radians(self.orientation)),
-             math.sin(math.radians(self.plane_tilt)),
-             math.cos(math.radians(self.plane_tilt))],
-            self.finger_len,
-        ]).astype(np.float32)
+        return np.concatenate(
+            [
+                self.curl,
+                self.angles.ravel() / 180.0,
+                self.thumb_angles / 180.0,
+                self.tips.ravel(),
+                self.tip_radius,
+                self.tips_local.ravel(),
+                [
+                    math.sin(math.radians(self.orientation)),
+                    math.cos(math.radians(self.orientation)),
+                    math.sin(math.radians(self.plane_tilt)),
+                    math.cos(math.radians(self.plane_tilt)),
+                ],
+                self.finger_len,
+            ]
+        ).astype(np.float32)
 
     @staticmethod
     def names() -> list:
@@ -105,10 +105,15 @@ class HandFeatures:
 def _flat_features() -> HandFeatures:
     """Vetor neutro, para quando o esqueleto esta degenerado."""
     return HandFeatures(
-        curl=np.zeros(5, np.float32), angles=np.zeros((4, 2), np.float32),
-        thumb_angles=np.zeros(2, np.float32), tips=np.zeros((5, 2), np.float32),
-        tip_radius=np.zeros(5, np.float32), tips_local=np.zeros((5, 2), np.float32),
-        orientation=0.0, plane_tilt=0.0, finger_len=np.zeros(5, np.float32),
+        curl=np.zeros(5, np.float32),
+        angles=np.zeros((4, 2), np.float32),
+        thumb_angles=np.zeros(2, np.float32),
+        tips=np.zeros((5, 2), np.float32),
+        tip_radius=np.zeros(5, np.float32),
+        tips_local=np.zeros((5, 2), np.float32),
+        orientation=0.0,
+        plane_tilt=0.0,
+        finger_len=np.zeros(5, np.float32),
     )
 
 
@@ -130,13 +135,16 @@ def hand_features(hand: Hand) -> HandFeatures:
     angles = np.zeros((4, 2), np.float32)
     for i, f in enumerate(FINGERS_4):
         mcp, pip, tip = FINGER_CHAINS[f]
-        angles[i, 0] = hand.angle(mcp, pip, tip)          # dobradilha na PIP
-        angles[i, 1] = hand.angle(pip, tip, _TIP_OF[f])  # dobradilha na DIP
+        angles[i, 0] = hand.angle(mcp, pip, tip)  # dobradilha na PIP
+        angles[i, 1] = hand.angle(pip, _DIP_OF[f], _TIP_OF[f])  # dobradilha na DIP
 
-    thumb_angles = np.array([
-        hand.angle(THUMB_MCP, THUMB_IP, THUMB_TIP),
-        hand.angle(WRIST, THUMB_MCP, THUMB_TIP),
-    ], np.float32)
+    thumb_angles = np.array(
+        [
+            hand.angle(THUMB_MCP, THUMB_IP, THUMB_TIP),
+            hand.angle(WRIST, THUMB_MCP, THUMB_TIP),
+        ],
+        np.float32,
+    )
 
     tips = np.array([lm[FINGER_CHAINS[f][2], :2] for f in FINGERS], np.float32)
     tips = (tips - lm[WRIST, :2]) / size
@@ -156,6 +164,15 @@ def hand_features(hand: Hand) -> HandFeatures:
         tips_local[i, 0] = p[0] * ex[0] + p[1] * ex[1]
         tips_local[i, 1] = p[0] * ey[0] + p[1] * ey[1]
 
+    # quiralidade: mao esquerda e direita sao imagens espelhadas e, no
+    # referencial local, uma e a outra com o eixo x invertido. Sem flip o
+    # classificador precisaria aprender cada letra duas vezes (uma por mao);
+    # com flip, a mesma amostra vale para as duas. `handedness` >0.5 e
+    # esquerda (convencao do modelo); valores degenerados ~0.5 entram como
+    # direita. Medidas de norma (tip_radius, espacamento) nao mudam com flip.
+    mirror = -1.0 if hand.handedness > 0.5 else 1.0
+    tips_local[:, 0] *= mirror
+
     orientation = hand.orientation()
     # normal do plano da palma via produto vetorial dos eixos da mao
     v1 = lm[MIDDLE_MCP, :2] - lm[WRIST, :2]
@@ -163,16 +180,26 @@ def hand_features(hand: Hand) -> HandFeatures:
     cross = v1[0] * v2[1] - v1[1] * v2[0]
     area = float(np.linalg.norm(v1) * np.linalg.norm(v2))
     plane_tilt = math.degrees(math.asin(float(np.clip(cross / area, -1.0, 1.0)))) if area else 0.0
+    plane_tilt *= mirror
 
-    finger_len = np.array([
-        float(np.linalg.norm(lm[FINGER_CHAINS[f][1], :2] - lm[FINGER_CHAINS[f][0], :2])) / size
-        for f in FINGERS
-    ], np.float32)
+    finger_len = np.array(
+        [
+            float(np.linalg.norm(lm[FINGER_CHAINS[f][1], :2] - lm[FINGER_CHAINS[f][0], :2])) / size
+            for f in FINGERS
+        ],
+        np.float32,
+    )
 
     return HandFeatures(
-        curl=curl, angles=angles, thumb_angles=thumb_angles, tips=tips,
-        tip_radius=tip_radius, tips_local=tips_local, orientation=orientation,
-        plane_tilt=plane_tilt, finger_len=finger_len,
+        curl=curl,
+        angles=angles,
+        thumb_angles=thumb_angles,
+        tips=tips,
+        tip_radius=tip_radius,
+        tips_local=tips_local,
+        orientation=orientation,
+        plane_tilt=plane_tilt,
+        finger_len=finger_len,
     )
 
 
@@ -185,22 +212,24 @@ class MotionFeatures:
     na mesma ordem de grandeza das features estaticas.
     """
 
-    velocity: np.ndarray            # (5,) velocidade de dobradilha
-    tip_velocity: np.ndarray        # (5, 2) velocidade de cada ponta
-    center_velocity: np.ndarray     # (2,) velocidade do centro da mao
-    acceleration: np.ndarray        # (5,) segunda derivada da dobradilha
-    spread: float                   # 0..1, abertura dos dedos
-    path_length: float              # deslocamento acumulado normalizado
-    straightness: float             # 0 ida-e-volta, 1 movimento em linha reta
+    velocity: np.ndarray  # (5,) velocidade de dobradilha
+    tip_velocity: np.ndarray  # (5, 2) velocidade de cada ponta
+    center_velocity: np.ndarray  # (2,) velocidade do centro da mao
+    acceleration: np.ndarray  # (5,) segunda derivada da dobradilha
+    spread: float  # 0..1, abertura dos dedos
+    path_length: float  # deslocamento acumulado normalizado
+    straightness: float  # 0 ida-e-volta, 1 movimento em linha reta
 
     def vector(self) -> np.ndarray:
-        return np.concatenate([
-            self.velocity * 10.0,
-            self.tip_velocity.ravel() * 10.0,
-            self.center_velocity.ravel() * 10.0,
-            self.acceleration * 10.0,
-            [self.spread, self.path_length, self.straightness],
-        ]).astype(np.float32)
+        return np.concatenate(
+            [
+                self.velocity * 10.0,
+                self.tip_velocity.ravel() * 10.0,
+                self.center_velocity.ravel() * 10.0,
+                self.acceleration * 10.0,
+                [self.spread, self.path_length, self.straightness],
+            ]
+        ).astype(np.float32)
 
     @staticmethod
     def names() -> list:
@@ -212,10 +241,14 @@ class MotionFeatures:
         return n
 
 
-def motion_features(prev: HandFeatures, cur: HandFeatures,
-                    prev_center: np.ndarray, cur_center: np.ndarray,
-                    prev_vel: np.ndarray | None = None,
-                    dt: float = 1.0 / 30.0) -> MotionFeatures:
+def motion_features(
+    prev: HandFeatures,
+    cur: HandFeatures,
+    prev_center: np.ndarray,
+    cur_center: np.ndarray,
+    prev_vel: np.ndarray | None = None,
+    dt: float = 1.0 / 30.0,
+) -> MotionFeatures:
     """Diferencas entre dois quadros consecutivos.
 
     `prev_vel` e a velocidade do quadro anterior, para a aceleracao; sem ela a
@@ -236,7 +269,9 @@ def motion_features(prev: HandFeatures, cur: HandFeatures,
         tip_velocity=tip_vel.astype(np.float32),
         center_velocity=cen_vel.astype(np.float32),
         acceleration=acc.astype(np.float32),
-        spread=spread, path_length=path, straightness=0.0,
+        spread=spread,
+        path_length=path,
+        straightness=0.0,
     )
 
 
@@ -250,9 +285,9 @@ class HandHistory:
     """
 
     maxlen: int = 30
-    poses: list = field(default_factory=list)      # HandFeatures
-    centers: list = field(default_factory=list)    # xy normalizado
-    times: list = field(default_factory=list)      # timestamps
+    poses: list = field(default_factory=list)  # HandFeatures
+    centers: list = field(default_factory=list)  # xy normalizado
+    times: list = field(default_factory=list)  # timestamps
 
     def push(self, hand: Hand, t: float) -> HandFeatures:
         f = hand_features(hand)
@@ -273,9 +308,14 @@ class HandHistory:
             return None
         dt = self.times[-1] - self.times[-2]
         prev_vel = getattr(self, "_last_vel", None)
-        m = motion_features(self.poses[-2], self.poses[-1],
-                            self.centers[-2], self.centers[-1], prev_vel,
-                            dt or 1 / 30.0)
+        m = motion_features(
+            self.poses[-2],
+            self.poses[-1],
+            self.centers[-2],
+            self.centers[-1],
+            prev_vel,
+            dt or 1 / 30.0,
+        )
         self._last_vel = m.velocity
         return m
 
@@ -284,6 +324,21 @@ class HandHistory:
         if len(self.centers) < 2:
             return 0.0
         c = np.array(self.centers)
+        return float(np.sum(np.linalg.norm(np.diff(c, axis=0), axis=1)))
+
+    def recent_path(self, k: int = 4) -> float:
+        """Caminho do centro nos ultimos `k` quadros.
+
+        E o teste de movimento que o reconhecedor deve usar: a janela inteira
+        (30 quadros, ~1s) acumula o deslocamento de TODAS as transicoes do
+        ultimo segundo, entao quem sinaliza em sequencia parece sempre "em
+        movimento" mesmo com cada pose segurada. Os ultimos quadros dizem o
+        que a mao esta fazendo AGORA: parada, sinal de movimento, ou
+        transicao rapida entre letras.
+        """
+        if len(self.centers) < 2:
+            return 0.0
+        c = np.array(self.centers[-(k + 1):])
         return float(np.sum(np.linalg.norm(np.diff(c, axis=0), axis=1)))
 
     def straightness(self) -> float:

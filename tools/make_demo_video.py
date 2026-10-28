@@ -3,6 +3,7 @@
 As letras aparecem em sequencia, com a mao mantida por `hold` quadros,
 pausada por `gap` (que vira espaco/pausa) e com rotulo na tela.
 """
+
 import argparse
 import sys
 from pathlib import Path
@@ -24,17 +25,21 @@ SPREAD = {"U": 0.0, "V": 25.0, "W": 18.0}
 
 
 def pose_for(letter):
-    spec = next(l for l in LETTERS if l.name == letter)
+    spec = next(let for let in LETTERS if let.name == letter)
     curl = [1.0] * 5
     for i, up in enumerate(spec.fingers):
         curl[i + 1] = 0.0 if up else 1.0
     curl[0] = CURL[spec.thumb]
-    return make_pose(curl=tuple(curl), scale=0.20,
-                     rotation=0.0, spread=SPREAD.get(letter, 0.0),
-                     thumb_spread=TSPREAD[spec.thumb])
+    return make_pose(
+        curl=tuple(curl),
+        scale=0.20,
+        rotation=0.0,
+        spread=SPREAD.get(letter, 0.0),
+        thumb_spread=TSPREAD[spec.thumb],
+    )
 
 
-SKIN = (150, 175, 205)     # BGR, dentro da faixa YCrCb usada pelo tracker
+SKIN = (150, 175, 205)  # BGR, dentro da faixa YCrCb usada pelo tracker
 SKIN_DARK = (120, 145, 175)
 BG = (30, 30, 30)
 
@@ -62,7 +67,7 @@ def draw(hand, letter):
     # dedos: capsulas grossas com articulation
     for name, chain in chains.items():
         width = 30 if name == "thumb" else 24
-        for a, b in zip(chain[:-1], chain[1:]):
+        for a, b in zip(chain[:-1], chain[1:], strict=False):
             cv2.line(img, tuple(pi[a]), tuple(pi[b]), SKIN, width)
         for i in chain[1:-1]:
             cv2.circle(img, tuple(pi[i]), width // 2, SKIN, -1)
@@ -71,18 +76,16 @@ def draw(hand, letter):
 
     # marcadores dos landmarks, para conferir a pose a olho nu
     for i, p in enumerate(pi):
-        cv2.circle(img, tuple(int(v) for v in p), 4,
-                   (0, 0, 255) if i == 0 else (40, 220, 60), -1)
+        cv2.circle(img, tuple(int(v) for v in p), 4, (0, 0, 255) if i == 0 else (40, 220, 60), -1)
 
     cv2.rectangle(img, (0, 0), (W, 120), (0, 0, 0), -1)
-    cv2.putText(img, letter, (W // 2 - 40, 90), cv2.FONT_HERSHEY_SIMPLEX,
-                3.0, (255, 255, 255), 5)
+    cv2.putText(img, letter, (W // 2 - 40, 90), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (255, 255, 255), 5)
     return img
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="/tmp/opencode/libras.mp4")
+    ap.add_argument("--out", default="data/demo.mp4")
     ap.add_argument("--text", default="OLAR")
     ap.add_argument("--hold", type=int, default=18)
     ap.add_argument("--gap", type=int, default=14)
@@ -101,8 +104,9 @@ def main():
         for _ in range(args.gap):
             vw.write(blank.copy())
     vw.release()
-    print(f"{args.out}  ({len(args.text)} letras, "
-          f"{(args.hold + args.gap) * len(args.text)} quadros)")
+    print(
+        f"{args.out}  ({len(args.text)} letras, {(args.hold + args.gap) * len(args.text)} quadros)"
+    )
 
 
 if __name__ == "__main__":

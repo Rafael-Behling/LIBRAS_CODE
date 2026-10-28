@@ -5,6 +5,7 @@ classificacao de forma reprodutivel, ja que nao ha dataset no projeto.
 Uma mao de 21 landmarks e montada como uma arvore: pulso -> cinco cadeia de
 dedos, cada uma com angulos de dobradilha controlados.
 """
+
 from __future__ import annotations
 
 import math
@@ -13,7 +14,6 @@ import numpy as np
 
 from ..core.hand_tracker import (
     FINGERS,
-    FINGER_CHAINS,
     INDEX_MCP,
     MIDDLE_MCP,
     PINKY_MCP,
@@ -22,7 +22,6 @@ from ..core.hand_tracker import (
     THUMB_MCP,
     WRIST,
     Hand,
-    HandTracker,
 )
 
 # nos percorridos por _chain, do MCP ate a ponta (o primeiro segmento vai do
@@ -80,7 +79,7 @@ def _chain(pts, nodes, root_idx, direction, curls, lengths, palm=0.6):
     y += palm * math.sin(math.radians(a))
     pts[mcp] = (x, y)
     # MCP -> PIP -> DIP -> ponta: cada junta soma o seu angulo
-    for i, (node, seg) in enumerate(zip(nodes[1:], lengths)):
+    for i, (node, seg) in enumerate(zip(nodes[1:], lengths, strict=False)):
         a += curls[min(i, len(curls) - 1)]
         x += seg * math.cos(math.radians(a))
         y += seg * math.sin(math.radians(a))
@@ -88,8 +87,14 @@ def _chain(pts, nodes, root_idx, direction, curls, lengths, palm=0.6):
     return pts
 
 
-def make_pose(curl=(0.0, 0.0, 0.0, 0.0, 0.0), thumb_dir=None,
-              scale=0.18, rotation=0.0, spread=0.0, thumb_spread=0.0) -> Hand:
+def make_pose(
+    curl=(0.0, 0.0, 0.0, 0.0, 0.0),
+    thumb_dir=None,
+    scale=0.18,
+    rotation=0.0,
+    spread=0.0,
+    thumb_spread=0.0,
+) -> Hand:
     """Monta uma `Hand` com os curls pedidos (0 = estendido, 1 = dobrado).
 
     `curl` segue a ordem de FINGERS: polegar, indicador, medio, anelar,
@@ -140,7 +145,6 @@ def make_pose(curl=(0.0, 0.0, 0.0, 0.0, 0.0), thumb_dir=None,
     if rotation:
         th = math.radians(rotation)
         rel = arr[:, :2] - arr[WRIST, :2]
-        rot = np.array([[math.cos(th), -math.sin(th)],
-                        [math.sin(th), math.cos(th)]], np.float32)
+        rot = np.array([[math.cos(th), -math.sin(th)], [math.sin(th), math.cos(th)]], np.float32)
         arr[:, :2] = rel @ rot.T + arr[WRIST, :2]
     return Hand(arr, presence=0.9, handedness=0.2, box=(0.0, 0.0, 1.0, 1.0), smooth=1.0)

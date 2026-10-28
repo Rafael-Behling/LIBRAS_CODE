@@ -3,6 +3,7 @@
 O que importa aqui e a histerese: uma letra so entra depois de se sustentar
 por varios quadros, e uma pose instavel nao pode gerar texto ilegivel.
 """
+
 import sys
 import unittest
 from pathlib import Path
@@ -14,8 +15,7 @@ from libras.signs.dactylology import LetterGuess
 
 
 def g(letter, score=0.9, candidates=None, needs=""):
-    return LetterGuess(letter=letter, score=score,
-                       candidates=candidates or [letter], needs=needs)
+    return LetterGuess(letter=letter, score=score, candidates=candidates or [letter], needs=needs)
 
 
 def feed(builder, guess, n):
@@ -42,15 +42,15 @@ class TestPhraseBuilder(unittest.TestCase):
         """Um quadro lido como outra letra (flicker) nao reinicia a leitura."""
         b = PhraseBuilder(hold_frames=5, cooldown=0, space_after=999)
         feed(b, g("C"), 4)
-        feed(b, g("D"), 1)                 # classificador piscou para D
-        feed(b, g("C"), 2)                 # volta para C
+        feed(b, g("D"), 1)  # classificador piscou para D
+        feed(b, g("C"), 2)  # volta para C
         self.assertEqual(b.text, "C", f"um quadro isolado derrubou: {b.text!r}")
 
     def test_single_quiet_frame_does_not_reset_hold(self):
         """Um quadro sem leitura (mao perdida) nao reinicia a leitura."""
         b = PhraseBuilder(hold_frames=5, cooldown=0, space_after=999)
         feed(b, g("C"), 4)
-        feed(b, None, 1)                   # rastreador perdeu a mao
+        feed(b, None, 1)  # rastreador perdeu a mao
         feed(b, g("C"), 2)
         self.assertEqual(b.text, "C", f"um quadro sem leitura derrubou: {b.text!r}")
 
@@ -77,8 +77,7 @@ class TestPhraseBuilder(unittest.TestCase):
         """A/I/G tem a mesma pose. Aceitar uma delas produziria palavra
         errada; o certo e nao entrar nada e reportar a ambiguidade."""
         b = PhraseBuilder(hold_frames=3, cooldown=0)
-        amb = g("I", score=0.9, candidates=["G", "I", "Y"],
-                needs="direcao do dedo")
+        amb = g("I", score=0.9, candidates=["G", "I", "Y"], needs="direcao do dedo")
         feed(b, amb, 30)
         self.assertEqual(b.text, "", f"aceitou letra ambigua: {b.text!r}")
         self.assertIn("I", builder_candidates(b))
@@ -99,8 +98,7 @@ class TestPhraseBuilder(unittest.TestCase):
         self.assertEqual(b.text, "")
 
     def test_max_length_is_bounded(self):
-        b = PhraseBuilder(hold_frames=1, cooldown=0, space_after=9999,
-                          max_len=10)
+        b = PhraseBuilder(hold_frames=1, cooldown=0, space_after=9999, max_len=10)
         for i in range(40):
             b.push(g(chr(ord("A") + i % 26)))
         self.assertLessEqual(len(b.text), 10)

@@ -11,6 +11,7 @@ poucas dezenas de classes), entao treina em segundos na CPU.
 
 O vetor de entrada e o `HandFeatures.vector()` de `libras.core.features`.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,11 +36,11 @@ class LetterClassifier:
     gradiente fica dominado pela de maior escala.
     """
 
-    classes: list          # nomes das letras, na ordem das colunas de W
-    mean: np.ndarray       # (D,)
-    std: np.ndarray        # (D,)
-    W: np.ndarray          # (D, K)
-    b: np.ndarray          # (K,)
+    classes: list  # nomes das letras, na ordem das colunas de W
+    mean: np.ndarray  # (D,)
+    std: np.ndarray  # (D,)
+    W: np.ndarray  # (D, K)
+    b: np.ndarray  # (K,)
 
     @property
     def n_features(self) -> int:
@@ -72,27 +73,36 @@ class LetterClassifier:
         order = np.argsort(-p)
         top = int(order[0])
         cands = [self.classes[k] for k in order if p[k] >= p[top] * margin]
-        return LetterGuess(letter=self.classes[top], score=float(p[top]),
-                           candidates=cands)
+        return LetterGuess(letter=self.classes[top], score=float(p[top]), candidates=cands)
 
     # --- persistencia ---
 
     def save(self, path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, classes=np.array(self.classes),
-                            mean=self.mean, std=self.std, W=self.W, b=self.b)
+        np.savez_compressed(
+            path, classes=np.array(self.classes), mean=self.mean, std=self.std, W=self.W, b=self.b
+        )
 
     @staticmethod
-    def load(path) -> "LetterClassifier":
+    def load(path) -> LetterClassifier:
         d = np.load(path, allow_pickle=False)
-        return LetterClassifier(classes=[str(c) for c in d["classes"]],
-                                mean=d["mean"], std=d["std"], W=d["W"], b=d["b"])
+        return LetterClassifier(
+            classes=[str(c) for c in d["classes"]], mean=d["mean"], std=d["std"], W=d["W"], b=d["b"]
+        )
 
 
-def fit(X: np.ndarray, y: list, classes: list | None = None,
-        iters: int = 1500, lr: float = 0.5, l2: float = 1e-4,
-        batch: int = 64, seed: int = 0, verbose: bool = False) -> LetterClassifier:
+def fit(
+    X: np.ndarray,
+    y: list,
+    classes: list | None = None,
+    iters: int = 1500,
+    lr: float = 0.5,
+    l2: float = 1e-4,
+    batch: int = 64,
+    seed: int = 0,
+    verbose: bool = False,
+) -> LetterClassifier:
     """Treina a regressao softmax por descida de gradiente (mini-batch).
 
     `X` (N, D) sao as features; `y` os rotulos (letras). Devolve o modelo ja
@@ -124,7 +134,7 @@ def fit(X: np.ndarray, y: list, classes: list | None = None,
         p = softmax(xb @ W + b)
         oh = np.zeros_like(p)
         oh[np.arange(len(idx)), yb] = 1.0
-        g = (p - oh) / len(idx)                     # (b, K)
+        g = (p - oh) / len(idx)  # (b, K)
         grad_W = xb.T @ g + l2 * W
         grad_b = g.sum(axis=0)
         W -= lr * grad_W

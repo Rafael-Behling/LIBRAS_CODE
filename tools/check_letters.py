@@ -9,6 +9,7 @@ Serve para comparar antes/depois de regravar: mostra acuracia e para quais
 letras cada amostra esta sendo trocada. Se as amostras de L continuarem
 virando M, o rotulo regravado ainda tem o mesmo vicio.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,8 +30,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--samples", default="data/samples.npz")
     ap.add_argument("--model", default="models/dactylology_clf.npz")
-    ap.add_argument("--letters", default="LC",
-                    help="letras a inspecionar (ex.: LCM)")
+    ap.add_argument("--letters", default="LC", help="letras a inspecionar (ex.: LCM)")
     args = ap.parse_args(argv)
 
     src = Path(args.samples)
@@ -49,20 +49,18 @@ def main(argv=None):
             print(f"{L}: nao esta no modelo (letra dinamica?)")
             continue
         preds = Counter()
-        curl_p, curl = [], []
+        curl = []
         for i in range(len(labels)):
             if labels[i] != L:
                 continue
-            h = Hand(landmarks=lm[i], presence=float(presence[i]),
-                     handedness=float(handedness[i]))
+            h = Hand(landmarks=lm[i], presence=float(presence[i]), handedness=float(handedness[i]))
             f = hand_features(h)
             p = clf.predict_proba(f.vector())[0]
             preds[clf.classes[int(p.argmax())]] += 1
             curl.append(f.curl)
         total = sum(preds.values())
         certos = preds.get(L, 0)
-        print(f"\n{L}: {certos}/{total} corretos "
-              f"({100.0 * certos / max(total, 1):.0f}%)")
+        print(f"\n{L}: {certos}/{total} corretos ({100.0 * certos / max(total, 1):.0f}%)")
         for letra, n in preds.most_common():
             marca = "ok" if letra == L else "  <- troca"
             print(f"   {L} -> {letra}: {n}{marca}")

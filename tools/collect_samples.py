@@ -16,10 +16,13 @@ O que e salvo sao os 21 landmarks (x, y, z normalizados) de cada quadro
 gravado, nao as features prontas: assim o dataset sobrevive a mudancas no
 extrator de features. O treino recompoe as features a partir dos landmarks.
 
-Cada letra quer umas 20-40 amostras, variando um pouco o angulo e a distancia
-da mao. Grava em rajada: um quadro a cada `--stride` (padrao 2), para as
-amostras nao ficarem quase identicas.
+Cada rajada de gravacao de uma letra forma um GRUPO (`groups`): os quadros
+consecutivos do mesmo grupo dao as features de movimento no treino do
+classificador temporal (letras dinamicas H, J, K, X, Y, Z). `times` guarda o
+timestamp de cada quadro para as velocidades nao mentirem nos vao da
+gravacao.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,24 +39,48 @@ from libras.core.hand_tracker import HandTracker
 from libras.signs.dactylology import LETTERS
 
 WINDOW = "Gravar amostras (A-Z)"
-ALPHABET = [l.name for l in LETTERS]
+ALPHABET = [let.name for let in LETTERS]
 
 
 def load_dataset(path: Path):
-    """Le um .npz anterior, se existir; senao devolve arrays vazios."""
+    """Le um .npz anterior, se existir; senao devolve arrays vazios.
+
+    `groups` e `times` sao opcionais: datasets antigos nao os tem, e o treino
+    temporal simplesmente nao roda sobre eles.
+    """
     if path.exists():
         d = np.load(path, allow_pickle=False)
-        return (d["landmarks"], d["labels"], d["presence"], d["handedness"])
-    return (np.zeros((0, 21, 3), np.float32), np.zeros(0, "U1"),
-            np.zeros(0, np.float32), np.zeros(0, np.float32))
+        groups = d["groups"] if "groups" in d else np.zeros(len(d["labels"]), np.int32)
+        times = d["times"] if "times" in d else np.zeros(len(d["labels"]), np.float64)
+        return (
+            d["landmarks"],
+            d["labels"],
+            d["presence"],
+            d["handedness"],
+            groups.astype(np.int32),
+            times.astype(np.float64),
+        )
+    return (
+        np.zeros((0, 21, 3), np.float32),
+        np.zeros(0, "U1"),
+        np.zeros(0, np.float32),
+        np.zeros(0, np.float32),
+        np.zeros(0, np.int32),
+        np.zeros(0, np.float64),
+    )
 
 
-def save_dataset(path: Path, lm, labels, presence, handedness) -> None:
+def save_dataset(path: Path, lm, labels, presence, handedness, groups, times) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, landmarks=lm.astype(np.float32),
-                        labels=labels.astype("U1"),
-                        presence=presence.astype(np.float32),
-                        handedness=handedness.astype(np.float32))
+    np.savez_compressed(
+        path,
+        landmarks=lm.astype(np.float32),
+        labels=labels.astype("U1"),
+        presence=presence.astype(np.float32),
+        handedness=handedness.astype(np.float32),
+        groups=groups.astype(np.int32),
+        times=times.astype(np.float64),
+    )
 
 
 def draw(frame, label, recording, counts, session, total, fps):
@@ -63,17 +90,29 @@ def draw(frame, label, recording, counts, session, total, fps):
     letra = label or "-"
     cor = (0, 220, 0) if recording else (140, 140, 140)
     estado = "GRAVANDO" if recording else ("pausado" if label else "escolha uma letra")
-    cv2.putText(out, f"{letra}   {estado}", (16, 46),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.2, cor, 3)
-    cv2.putText(out, f"desta sessao: {session}   total: {total}   {fps:.0f} fps",
-                (16, 74), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    cv2.putText(out, f"{letra}   {estado}", (16, 46), cv2.FONT_HERSHEY_SIMPLEX, 1.2, cor, 3)
+    cv2.putText(
+        out,
+        f"desta sessao: {session}   total: {total}   {fps:.0f} fps",
+        (16, 74),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (200, 200, 200),
+        1,
+    )
     # contagem por letra ja gravada
     parts = [f"{k}:{v}" for k, v in sorted(counts.items())]
     linha = "  ".join(parts)
-    cv2.putText(out, linha[-90:], (16, h - 14),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
-    cv2.putText(out, "[A-Z] letra  [espaco] pausa  [0] limpar sessao  [ESC] sair",
-                (16, h - 36), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1)
+    cv2.putText(out, linha[-90:], (16, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
+    cv2.putText(
+        out,
+        "[A-Z] letra  [espaco] pausa  [0] limpar sessao  [ESC] sair",
+        (16, h - 36),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (120, 120, 120),
+        1,
+    )
     return out
 
 
@@ -82,16 +121,23 @@ def main(argv=None):
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--out", default="data/samples.npz")
     ap.add_argument("--models", default="models")
-    ap.add_argument("--stride", type=int, default=2,
-                    help="grava um quadro a cada N (evita amostras quase iguais)")
+    ap.add_argument(
+        "--stride",
+        type=int,
+        default=2,
+        help="grava um quadro a cada N (evita amostras quase iguais)",
+    )
     ap.add_argument("--min-presence", type=float, default=0.6)
-    ap.add_argument("--replace", default="",
-                    help="letras a descartar do dataset antes de gravar "
-                         "(ex.: 'LC' regrava L e C do zero)")
+    ap.add_argument(
+        "--replace",
+        default="",
+        help="letras a descartar do dataset antes de gravar (ex.: 'LC' regrava L e C do zero)",
+    )
     args = ap.parse_args(argv)
 
     out_path = Path(args.out)
-    lm, labels, presence, handedness = load_dataset(out_path)
+    lm, labels, presence, handedness, groups, times = load_dataset(out_path)
+    next_group = int(groups.max()) + 1 if len(groups) else 0
 
     # Regravar uma letra so faz sentido se as amostras velhas dela sairem:
     # senao o modelo continua aprendendo com o rotulo ruidoso que motivou a
@@ -102,6 +148,8 @@ def main(argv=None):
         removidas = len(labels) - int(keep.sum())
         lm, labels = lm[keep], labels[keep]
         presence, handedness = presence[keep], handedness[keep]
+        groups, times = groups[keep], times[keep]
+        next_group = int(groups.max()) + 1 if len(groups) else 0
         print(f"--replace: removidas {removidas} amostras de {sorted(drop)}")
 
     n_base = len(labels)
@@ -131,14 +179,23 @@ def main(argv=None):
         hands = tracker.process(frame)
         hand = hands[0] if hands else None
         gravou = False
-        if hand is not None and recording and label is not None:
-            if hand.presence >= args.min_presence and frame_i % max(args.stride, 1) == 0:
-                lm = np.concatenate([lm, hand.landmarks[None, :, :3].astype(np.float32)])
-                labels = np.concatenate([labels, np.array([label], "U1")])
-                presence = np.append(presence, hand.presence).astype(np.float32)
-                handedness = np.append(handedness, hand.handedness).astype(np.float32)
-                session += 1
-                gravou = True
+        if (
+            hand is not None
+            and recording
+            and label is not None
+            and hand.presence >= args.min_presence
+            and frame_i % max(args.stride, 1) == 0
+        ):
+            lm = np.concatenate([lm, hand.landmarks[None, :, :3].astype(np.float32)])
+            labels = np.concatenate([labels, np.array([label], "U1")])
+            presence = np.append(presence, hand.presence).astype(np.float32)
+            handedness = np.append(handedness, hand.handedness).astype(np.float32)
+            # mesmo grupo ate trocar de letra: os quadros consecutivos da
+            # rajada sao a sequencia que treina o modelo temporal
+            groups = np.append(groups, next_group).astype(np.int32)
+            times = np.append(times, now).astype(np.float64)
+            session += 1
+            gravou = True
 
         if hand is not None:
             px = hand.landmarks[:, :2] * np.array([frame.shape[1], frame.shape[0]])
@@ -149,27 +206,35 @@ def main(argv=None):
         counts = {k: v for k, v in counts.items() if v}
         if gravou:
             cv2.circle(frame, (frame.shape[1] - 30, 30), 10, (0, 0, 255), -1)
-        cv2.imshow(WINDOW, draw(frame, label, recording, counts, session,
-                                len(labels), fps))
+        cv2.imshow(WINDOW, draw(frame, label, recording, counts, session, len(labels), fps))
         key = cv2.waitKey(1) & 0xFF
-        if key == 27:                                # ESC: sai (Q e uma letra!)
+        if key == 27:  # ESC: sai (Q e uma letra!)
             break
         elif key == ord(" "):
             recording = not recording
         elif key == ord("0"):
-            lm, labels, presence, handedness = lm[:n_base], labels[:n_base], \
-                presence[:n_base], handedness[:n_base]
+            lm, labels, presence, handedness = (
+                lm[:n_base],
+                labels[:n_base],
+                presence[:n_base],
+                handedness[:n_base],
+            )
             session = 0
-        elif 97 <= key <= 122:                       # a..z
+        elif 97 <= key <= 122:  # a..z
             letra = chr(key).upper()
             if letra in ALPHABET:
                 label = letra
                 recording = True
+                next_group += 1  # nova rajada: novo grupo temporal
 
     cap.release()
     cv2.destroyAllWindows()
-    save_dataset(out_path, lm, labels, presence, handedness)
-    print(f"salvo {len(labels)} amostras em {out_path} (+{len(labels) - n_base} nesta sessao)")
+    save_dataset(out_path, lm, labels, presence, handedness, groups, times)
+    n_grupos = len(np.unique(groups[n_base:])) if len(groups[n_base:]) else 0
+    print(
+        f"salvo {len(labels)} amostras em {out_path} "
+        f"(+{len(labels) - n_base} nesta sessao, {n_grupos} grupos)"
+    )
     return 0
 
 

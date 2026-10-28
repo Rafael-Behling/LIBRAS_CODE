@@ -8,11 +8,12 @@ de contraste entra so um veu escuro em degradê, que some nas bordas.
 Tudo e desenhado direto no frame (BGR, uint8). Este projeto escreve os
 comentarios sem acentos, como no resto do codigo.
 """
+
 from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -24,17 +25,35 @@ FONT_ROLES = ("mono", "mono_medium", "label", "label_light", "sans_bold")
 
 # ligacoes do esqueleto: do pulso aos MCPs e cada cadeia de dedo
 BONES = (
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (0, 9), (9, 10), (10, 11), (11, 12),
-    (0, 13), (13, 14), (14, 15), (15, 16),
-    (0, 17), (17, 18), (18, 19), (19, 20),
-    (5, 9), (9, 13), (13, 17),
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4),
+    (0, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8),
+    (0, 9),
+    (9, 10),
+    (10, 11),
+    (11, 12),
+    (0, 13),
+    (13, 14),
+    (14, 15),
+    (15, 16),
+    (0, 17),
+    (17, 18),
+    (18, 19),
+    (19, 20),
+    (5, 9),
+    (9, 13),
+    (13, 17),
 )
 TIPS = (4, 8, 12, 16, 20)
 
 
 # --- utilidades -------------------------------------------------------------
+
 
 def _scale(width: int) -> float:
     """Fator de escala da interface pela largura do frame."""
@@ -47,7 +66,7 @@ def _ease_out(t: float) -> float:
 
 
 def _mix(a, b, t: float):
-    return tuple(int(round(x * (1.0 - t) + y * t)) for x, y in zip(a, b))
+    return tuple(int(round(x * (1.0 - t) + y * t)) for x, y in zip(a, b, strict=False))
 
 
 def _blend(frame, x0, y0, x1, y1, color, alpha: float) -> None:
@@ -61,12 +80,13 @@ def _blend(frame, x0, y0, x1, y1, color, alpha: float) -> None:
         return
     region = frame[y0:y1, x0:x1].astype(np.float32)
     a = min(1.0, alpha)
-    region *= (1.0 - a)
+    region *= 1.0 - a
     region += np.asarray(color, np.float32)[None, None, :] * a
     frame[y0:y1, x0:x1] = region.astype(np.uint8)
 
 
 # --- estado -----------------------------------------------------------------
+
 
 @dataclass
 class HudState:
@@ -78,7 +98,7 @@ class HudState:
     hold_progress: float = 0.0
     hold_total: float = 1.0
     history: list = field(default_factory=list)
-    overlay: str = ""          # "", "help" ou "history"
+    overlay: str = ""  # "", "help" ou "history"
 
 
 class Hud:
@@ -164,8 +184,18 @@ class Hud:
             "h2": self._font("label", 22 * s),
         }
 
-    def _text(self, frame, x: float, y: float, text: str, font, color,
-              alpha: int = 255, align: str = "left", tracking: float = 0.0) -> float:
+    def _text(
+        self,
+        frame,
+        x: float,
+        y: float,
+        text: str,
+        font,
+        color,
+        alpha: int = 255,
+        align: str = "left",
+        tracking: float = 0.0,
+    ) -> float:
         """Escreve texto com fonte real e devolve a largura usada.
 
         O tile rasterizado fica em cache: rotulos e a marca se repetem muito
@@ -178,6 +208,9 @@ class Hud:
         hit = self._text_cache.get(key)
         if hit is not None:
             tile, width, ox, oy = hit
+            # toca o item: o dict guarda a ordem de uso, e os tiles quentes
+            # (rotulos fixos, que se repetem todo quadro) nao podem cair
+            self._text_cache[key] = self._text_cache.pop(key)
         else:
             if tracking:
                 width = sum(font.getlength(c) for c in text) + tracking * (len(text) - 1)
@@ -188,6 +221,7 @@ class Hud:
             tw = max(1, int(math.ceil(width)) + 2 * pad)
             th = max(1, asc + desc + 2 * pad)
             from PIL import Image, ImageDraw
+
             tile = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
             d = ImageDraw.Draw(tile)
             if tracking:
@@ -199,7 +233,12 @@ class Hud:
                 d.text((pad, pad), text, font=font, fill=fill)
             ox, oy = pad, pad
             if len(self._text_cache) > 512:
-                self._text_cache.clear()
+                # LRU simples: em vez de limpar tudo aos 512 itens (o que
+                # re-rasterizaria ate os rotulos fixos do proximo quadro),
+                # evicta os mais antigos e preserva os quentes
+                excedente = len(self._text_cache) - 384
+                for antigo in list(self._text_cache)[:excedente]:
+                    self._text_cache.pop(antigo, None)
             self._text_cache[key] = (tile, float(width), ox, oy)
 
         if align == "center":
@@ -234,8 +273,7 @@ class Hud:
             return sum(font.getlength(c) for c in text) + tracking * (len(text) - 1)
         return font.getlength(text)
 
-    def _fit_size(self, text: str, max_w: float, hi: int, lo: int,
-                  role: str = "mono") -> int:
+    def _fit_size(self, text: str, max_w: float, hi: int, lo: int, role: str = "mono") -> int:
         """Maior tamanho de fonte em que o texto cabe na largura."""
         size = hi
         while size > lo:
@@ -247,8 +285,7 @@ class Hud:
 
     # --- primitivas de desenho ----------------------------------------------
 
-    def _vgrad(self, frame, x0, y0, x1, y1, top: float, bottom: float,
-               color) -> None:
+    def _vgrad(self, frame, x0, y0, x1, y1, top: float, bottom: float, color) -> None:
         """Veu vertical: opacidade cai de `top` para `bottom` (ligado, suave)."""
         h, w = frame.shape[:2]
         x0, y0 = max(0, int(x0)), max(0, int(y0))
@@ -258,12 +295,11 @@ class Hud:
         rows = y1 - y0
         a = np.linspace(top, bottom, rows, dtype=np.float32)[:, None, None]
         region = frame[y0:y1, x0:x1].astype(np.float32)
-        region *= (1.0 - a)
+        region *= 1.0 - a
         region += np.asarray(color, np.float32)[None, None, :] * a
         frame[y0:y1, x0:x1] = region.astype(np.uint8)
 
-    def _glow(self, frame, cx: float, cy: float, radius: float, color,
-              strength: float) -> None:
+    def _glow(self, frame, cx: float, cy: float, radius: float, color, strength: float) -> None:
         """Halo radial aditivo, em baixa resolucao (e so uma mancha suave)."""
         if strength <= 0 or radius <= 1:
             return
@@ -279,15 +315,24 @@ class Hud:
         gy = (cy - y0) / q
         d = np.hypot(xx - gx, yy - gy) / max(radius / q, 1e-6)
         g = (np.clip(1.0 - d, 0.0, 1.0) ** 2)[:, :, None] * strength
-        region = cv2.resize(frame[y0:y1, x0:x1], (sw, sh),
-                            interpolation=cv2.INTER_LINEAR).astype(np.float32)
+        region = cv2.resize(frame[y0:y1, x0:x1], (sw, sh), interpolation=cv2.INTER_LINEAR).astype(
+            np.float32
+        )
         region += np.asarray(self.theme.bgr(color), np.float32)[None, None, :] * g
-        out = cv2.resize(region, (x1 - x0, y1 - y0),
-                         interpolation=cv2.INTER_LINEAR)
+        out = cv2.resize(region, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR)
         frame[y0:y1, x0:x1] = np.clip(out, 0, 255).astype(np.uint8)
 
-    def _ring(self, frame, cx: float, cy: float, radius: float, thickness: float,
-              frac: float, color, alpha: float = 1.0) -> None:
+    def _ring(
+        self,
+        frame,
+        cx: float,
+        cy: float,
+        radius: float,
+        thickness: float,
+        frac: float,
+        color,
+        alpha: float = 1.0,
+    ) -> None:
         """Arco de progresso, do topo no sentido horario."""
         if frac <= 0:
             return
@@ -306,18 +351,18 @@ class Hud:
         within = ang <= frac * 360.0
         m = (band * within * alpha)[:, :, None]
         region = frame[y0:y1, x0:x1].astype(np.float32)
-        region *= (1.0 - m)
+        region *= 1.0 - m
         region += np.asarray(self.theme.bgr(color), np.float32)[None, None, :] * m
         frame[y0:y1, x0:x1] = region.astype(np.uint8)
 
-    def _brackets(self, frame, x0, y0, x1, y1, size: float, color, alpha: float,
-                  thickness: int = 1) -> None:
+    def _brackets(
+        self, frame, x0, y0, x1, y1, size: float, color, alpha: float, thickness: int = 1
+    ) -> None:
         """Cantos em 'L': marca a area sem fechar o retangulo."""
         x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
         c = self.theme.bgr(color)
         over = cv2.LINE_AA
-        for (px, py, sx, sy) in ((x0, y0, 1, 1), (x1, y0, -1, 1),
-                                 (x0, y1, 1, -1), (x1, y1, -1, -1)):
+        for px, py, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
             cv2.line(frame, (px, py), (px + int(sx * size), py), c, thickness, over)
             cv2.line(frame, (px, py), (px, py + int(sy * size)), c, thickness, over)
 
@@ -345,40 +390,53 @@ class Hud:
             # halo das pontas, em baixa resolucao
             gh, gw = sub.shape[:2]
             gq = 4
-            gs = cv2.resize(sub, (max(1, gw // gq), max(1, gh // gq)),
-                            interpolation=cv2.INTER_LINEAR)
+            gs = cv2.resize(
+                sub, (max(1, gw // gq), max(1, gh // gq)), interpolation=cv2.INTER_LINEAR
+            )
             tip_col = self.theme.bgr(th.tip)
             for i in TIPS:
-                cv2.circle(gs, (int(local[i][0] // gq), int(local[i][1] // gq)),
-                           max(1, 12 // gq), tip_col, -1, lineType=cv2.LINE_AA)
+                cv2.circle(
+                    gs,
+                    (int(local[i][0] // gq), int(local[i][1] // gq)),
+                    max(1, 12 // gq),
+                    tip_col,
+                    -1,
+                    lineType=cv2.LINE_AA,
+                )
             gs = cv2.GaussianBlur(gs, (0, 0), 8.0 / gq)
             gs = cv2.resize(gs, (gw, gh), interpolation=cv2.INTER_LINEAR)
             cv2.addWeighted(gs, 0.35 * (0.6 + self.theme.glow), sub, 1.0, 0, dst=sub)
 
             layer = sub.copy()
             for a, b in BONES:
-                cv2.line(layer, tuple(local[a]), tuple(local[b]),
-                         self.theme.bgr(th.bone), 2, lineType=cv2.LINE_AA)
+                cv2.line(
+                    layer,
+                    tuple(local[a]),
+                    tuple(local[b]),
+                    self.theme.bgr(th.bone),
+                    2,
+                    lineType=cv2.LINE_AA,
+                )
             cv2.addWeighted(layer, th.bone_alpha, sub, 1.0 - th.bone_alpha, 0, dst=sub)
 
             for i in range(1, 21):
                 r = 3 if i in TIPS else 2
-                cv2.circle(sub, tuple(local[i]), r, self.theme.bgr(th.joint), -1,
-                           lineType=cv2.LINE_AA)
+                cv2.circle(
+                    sub, tuple(local[i]), r, self.theme.bgr(th.joint), -1, lineType=cv2.LINE_AA
+                )
             for i in TIPS:
-                cv2.circle(sub, tuple(local[i]), 5, self.theme.bgr(th.tip), -1,
-                           lineType=cv2.LINE_AA)
-                cv2.circle(sub, tuple(local[i]), 2, (255, 255, 255), -1,
-                           lineType=cv2.LINE_AA)
+                cv2.circle(
+                    sub, tuple(local[i]), 5, self.theme.bgr(th.tip), -1, lineType=cv2.LINE_AA
+                )
+                cv2.circle(sub, tuple(local[i]), 2, (255, 255, 255), -1, lineType=cv2.LINE_AA)
             # pulso em anel: marca onde a mao comeca
-            cv2.circle(sub, tuple(local[0]), 9, self.theme.bgr(th.primary), 1,
-                       lineType=cv2.LINE_AA)
-            self._glow(frame, pts[0][0], pts[0][1], 26, th.primary,
-                       self.theme.glow * 0.6)
+            cv2.circle(sub, tuple(local[0]), 9, self.theme.bgr(th.primary), 1, lineType=cv2.LINE_AA)
+            self._glow(frame, pts[0][0], pts[0][1], 26, th.primary, self.theme.glow * 0.6)
 
             bx = [int(v) for v in hand.box]
-            self._brackets(frame, bx[0], bx[1], bx[2], bx[3], 18, th.primary,
-                           self.theme.line_alpha * 0.9)
+            self._brackets(
+                frame, bx[0], bx[1], bx[2], bx[3], 18, th.primary, self.theme.line_alpha * 0.9
+            )
 
     # --- marcas de moldura ---------------------------------------------------
 
@@ -389,22 +447,37 @@ class Hud:
         fonts = self._fonts(w)
         th = self.theme
 
-        self._brackets(frame, m, m, w - m, h - m, 26 * sc, th.border,
-                       th.line_alpha * 0.55, 1)
+        self._brackets(frame, m, m, w - m, h - m, 26 * sc, th.border, th.line_alpha * 0.55, 1)
 
-        self._text(frame, m + 14 * sc, m + 8 * sc, "LIBRAS", fonts["mark"],
-                   th.text, tracking=4.0)
-        self._text(frame, m + 14 * sc, m + 42 * sc, "→ PORTUGUÊS", fonts["tiny"],
-                   th.primary, tracking=3.0)
+        self._text(frame, m + 14 * sc, m + 8 * sc, "LIBRAS", fonts["mark"], th.text, tracking=4.0)
+        self._text(
+            frame, m + 14 * sc, m + 42 * sc, "→ PORTUGUÊS", fonts["tiny"], th.primary, tracking=3.0
+        )
 
         n = len(state.hands)
         status = "RECONHECENDO" if n else "AGUARDANDO"
         col = th.success if n else th.accent
-        self._text(frame, w - m - 14 * sc, m + 8 * sc, status, fonts["tiny"],
-                   col, align="right", tracking=2.4)
+        self._text(
+            frame,
+            w - m - 14 * sc,
+            m + 8 * sc,
+            status,
+            fonts["tiny"],
+            col,
+            align="right",
+            tracking=2.4,
+        )
         if w >= 700:
-            self._text(frame, w - m - 14 * sc, m + 30 * sc, f"{state.fps:4.1f} FPS",
-                       fonts["tiny"], th.text_faint, align="right", tracking=1.4)
+            self._text(
+                frame,
+                w - m - 14 * sc,
+                m + 30 * sc,
+                f"{state.fps:4.1f} FPS",
+                fonts["tiny"],
+                th.text_faint,
+                align="right",
+                tracking=1.4,
+            )
 
     # --- frase ---------------------------------------------------------------
 
@@ -426,10 +499,17 @@ class Hud:
         size = self._fit_size(shown, max_w, int(40 * sc), int(24 * sc))
         f = fonts["phrase"] if abs(size - fonts["phrase"].size) < 1 else self._font("mono", size)
 
-        self._text(frame, x, base - 46 * sc, "FRASE", fonts["tiny"],
-                   th.text_faint, tracking=3.0)
-        self._vgrad(frame, x - 16 * sc, base - 20 * sc, w - m, base + 40 * sc,
-                    0.0, th.glass_alpha, th.glass_tint)
+        self._text(frame, x, base - 46 * sc, "FRASE", fonts["tiny"], th.text_faint, tracking=3.0)
+        self._vgrad(
+            frame,
+            x - 16 * sc,
+            base - 20 * sc,
+            w - m,
+            base + 40 * sc,
+            0.0,
+            th.glass_alpha,
+            th.glass_tint,
+        )
         if shown.strip():
             self._text(frame, x, base, shown, f, th.text)
             if current:
@@ -438,14 +518,11 @@ class Hud:
                 caret = x + cw + self._text_w(f, current) + 3 * sc
                 blink = 0.5 + 0.5 * math.sin(self._t * 3.2)
                 level = round(blink * 12) / 12.0
-                self._text(frame, caret, base, "▌", f, th.primary,
-                           alpha=int(90 + 165 * level))
+                self._text(frame, caret, base, "▌", f, th.primary, alpha=int(90 + 165 * level))
         else:
-            self._text(frame, x, base, "mostre uma letra à câmera", fonts["body"],
-                       th.text_faint)
+            self._text(frame, x, base, "mostre uma letra à câmera", fonts["body"], th.text_faint)
 
-        self._vline(frame, x - 16 * sc, base - 6 * sc, base + 40 * sc,
-                    th.primary, th.line_alpha)
+        self._vline(frame, x - 16 * sc, base - 6 * sc, base + 40 * sc, th.primary, th.line_alpha)
 
     # --- badge da letra em leitura ------------------------------------------
 
@@ -463,28 +540,33 @@ class Hud:
 
         anim = _ease_out((self._t - self._letter_at) / 0.22)
         r = base_r * (0.90 + 0.10 * anim)
-        self._glow(frame, cx, cy, r + 22 * sc, th.primary,
-                   self.theme.glow * (0.6 + 0.4 * anim))
+        self._glow(frame, cx, cy, r + 22 * sc, th.primary, self.theme.glow * (0.6 + 0.4 * anim))
 
-        cv2.circle(frame, (int(cx), int(cy)), int(r), self.theme.bgr(th.border),
-                   1, lineType=cv2.LINE_AA)
+        cv2.circle(
+            frame, (int(cx), int(cy)), int(r), self.theme.bgr(th.border), 1, lineType=cv2.LINE_AA
+        )
         frac = 0.0
         if state.hold_total > 0:
             frac = max(0.0, min(1.0, state.hold_progress / state.hold_total))
         if frac > 0:
-            self._ring(frame, cx, cy, r + 7 * sc, max(2.0, 2.6 * sc), frac,
-                       th.primary, 0.95)
+            self._ring(frame, cx, cy, r + 7 * sc, max(2.0, 2.6 * sc), frac, th.primary, 0.95)
 
         if current:
-            self._text(frame, cx, cy, current, fonts["letter"], th.text,
-                       align="center")
+            self._text(frame, cx, cy, current, fonts["letter"], th.text, align="center")
         else:
-            self._text(frame, cx, cy, "–", fonts["letter"], th.text_faint,
-                       align="center")
+            self._text(frame, cx, cy, "-", fonts["letter"], th.text_faint, align="center")
 
         label = "LEITURA" if current else "SEM LETRA"
-        self._text(frame, cx, cy + r + 14 * sc, label, fonts["tiny"],
-                   th.text_faint, align="center", tracking=2.0)
+        self._text(
+            frame,
+            cx,
+            cy + r + 14 * sc,
+            label,
+            fonts["tiny"],
+            th.text_faint,
+            align="center",
+            tracking=2.0,
+        )
 
     # --- estado ocioso -------------------------------------------------------
 
@@ -496,9 +578,16 @@ class Hud:
         # quantiza a pulsacao: sem isso a cor muda a cada quadro e o cache de
         # texto nunca acerta (rasterizar fonte por quadro e caro)
         level = round(pulse * 12) / 12.0
-        self._text(frame, w / 2, h * 0.16, "POSICIONE A MÃO NA CÂMERA",
-                   fonts["body"], _mix(th.text_faint, th.primary, 0.5 * level),
-                   align="center", tracking=4.0)
+        self._text(
+            frame,
+            w / 2,
+            h * 0.16,
+            "POSICIONE A MÃO NA CÂMERA",
+            fonts["body"],
+            _mix(th.text_faint, th.primary, 0.5 * level),
+            align="center",
+            tracking=4.0,
+        )
 
     # --- overlays ------------------------------------------------------------
 
@@ -519,8 +608,7 @@ class Hud:
         x, y, cw, ch = [int(v) for v in rect]
         th = self.theme
         _blend(frame, x, y, x + cw, y + ch, th.bgr(th.bg), darkness)
-        self._brackets(frame, x, y, x + cw, y + ch, 22 * _scale(cw), th.border,
-                       th.line_alpha, 1)
+        self._brackets(frame, x, y, x + cw, y + ch, 22 * _scale(cw), th.border, th.line_alpha, 1)
 
     def _help(self, frame, rect, w: int) -> None:
         x, y, cw, ch = [int(v) for v in rect]
@@ -537,13 +625,19 @@ class Hud:
             ("?  /", "abrir esta ajuda"),
             ("Q / ESC", "sair"),
         ]
-        self._text(frame, x + 26 * sc, y + 22 * sc, "ATALHOS", fonts["h2"],
-                   th.text, tracking=3.0)
-        self._text(frame, x + 26 * sc, y + 58 * sc,
-                   "letras entram sozinhas após a pose se manter",
-                   fonts["tiny"], th.text_faint, tracking=1.0)
-        self._hline(frame, x + 26 * sc, y + 82 * sc, x + cw - 26 * sc,
-                    th.border, th.line_alpha * 0.6)
+        self._text(frame, x + 26 * sc, y + 22 * sc, "ATALHOS", fonts["h2"], th.text, tracking=3.0)
+        self._text(
+            frame,
+            x + 26 * sc,
+            y + 58 * sc,
+            "letras entram sozinhas após a pose se manter",
+            fonts["tiny"],
+            th.text_faint,
+            tracking=1.0,
+        )
+        self._hline(
+            frame, x + 26 * sc, y + 82 * sc, x + cw - 26 * sc, th.border, th.line_alpha * 0.6
+        )
 
         row_y = y + 100 * sc
         step = min(34 * sc, max(18.0, (ch - 130 * sc) / len(rows)))
@@ -551,39 +645,40 @@ class Hud:
         for i, (keys, desc) in enumerate(rows):
             ry = row_y + i * step
             self._keycap(frame, x + 26 * sc, ry - 6 * sc, key_w, 22 * sc, keys)
-            self._text(frame, x + 26 * sc + key_w + 18 * sc, ry, desc,
-                       fonts["body"], th.text_dim)
+            self._text(frame, x + 26 * sc + key_w + 18 * sc, ry, desc, fonts["body"], th.text_dim)
 
     def _history(self, frame, rect, w: int, items: list) -> None:
         x, y, cw, ch = [int(v) for v in rect]
         sc = _scale(w)
         fonts = self._fonts(w)
         th = self.theme
-        self._text(frame, x + 26 * sc, y + 22 * sc, "HISTÓRICO", fonts["h2"],
-                   th.text, tracking=3.0)
-        self._hline(frame, x + 26 * sc, y + 58 * sc, x + cw - 26 * sc,
-                    th.border, th.line_alpha * 0.6)
+        self._text(frame, x + 26 * sc, y + 22 * sc, "HISTÓRICO", fonts["h2"], th.text, tracking=3.0)
+        self._hline(
+            frame, x + 26 * sc, y + 58 * sc, x + cw - 26 * sc, th.border, th.line_alpha * 0.6
+        )
         if not items:
-            self._text(frame, x + 26 * sc, y + 80 * sc, "nenhuma frase salva",
-                       fonts["body"], th.text_faint)
+            self._text(
+                frame, x + 26 * sc, y + 80 * sc, "nenhuma frase salva", fonts["body"], th.text_faint
+            )
             return
         row_y = y + 80 * sc
         step = min(34 * sc, max(18.0, (ch - 100 * sc) / max(1, len(items))))
         for i, item in enumerate(items[-10:]):
             ry = row_y + i * step
-            self._text(frame, x + 26 * sc, ry, f"{i + 1:02d}", fonts["key"],
-                       th.primary, tracking=1.0)
+            self._text(
+                frame, x + 26 * sc, ry, f"{i + 1:02d}", fonts["key"], th.primary, tracking=1.0
+            )
             self._text(frame, x + 70 * sc, ry, item, fonts["phrase"], th.text)
 
     def _keycap(self, frame, x, y, w, h, text: str) -> None:
         x, y, w, h = int(x), int(y), int(w), int(h)
         th = self.theme
         cv2.rectangle(frame, (x, y), (x + w, y + h), self.theme.bgr(th.surface), -1)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), self.theme.bgr(th.border), 1,
-                      lineType=cv2.LINE_AA)
+        cv2.rectangle(
+            frame, (x, y), (x + w, y + h), self.theme.bgr(th.border), 1, lineType=cv2.LINE_AA
+        )
         f = self._font("mono_medium", h * 0.62)
-        self._text(frame, x + w / 2, y + h * 0.20, text, f, th.text_dim,
-                   align="center")
+        self._text(frame, x + w / 2, y + h * 0.20, text, f, th.text_dim, align="center")
 
     # --- rodape --------------------------------------------------------------
 
@@ -605,10 +700,17 @@ class Hud:
         x = (w - pw) / 2
         y = h - int(MARGIN * sc) - ph - 8 * sc
         _blend(frame, x, y, x + pw, y + ph, th.bgr(th.surface), 0.88 * alpha)
-        self._brackets(frame, x, y, x + pw, y + ph, 10 * sc, th.primary,
-                       th.line_alpha * alpha)
-        self._text(frame, w / 2, y + (ph - 16 * sc) / 2, text, fonts["body"],
-                   th.text, alpha=int(255 * alpha), align="center")
+        self._brackets(frame, x, y, x + pw, y + ph, 10 * sc, th.primary, th.line_alpha * alpha)
+        self._text(
+            frame,
+            w / 2,
+            y + (ph - 16 * sc) / 2,
+            text,
+            fonts["body"],
+            th.text,
+            alpha=int(255 * alpha),
+            align="center",
+        )
 
     # --- linha ---------------------------------------------------------------
 
@@ -619,10 +721,10 @@ class Hud:
         if x1 <= x0:
             return
         col = np.asarray(self.theme.bgr(color), np.float32)
-        region = frame[y:y + 1, x0:x1].astype(np.float32)
-        region *= (1.0 - alpha)
+        region = frame[y : y + 1, x0:x1].astype(np.float32)
+        region *= 1.0 - alpha
         region += col[None, None, :] * alpha
-        frame[y:y + 1, x0:x1] = region.astype(np.uint8)
+        frame[y : y + 1, x0:x1] = region.astype(np.uint8)
 
     def _vline(self, frame, x, y0, y1, color, alpha: float) -> None:
         """Linha vertical de 1 px, misturada com o fundo."""
@@ -631,7 +733,7 @@ class Hud:
         if y1 <= y0:
             return
         col = np.asarray(self.theme.bgr(color), np.float32)
-        region = frame[y0:y1, x:x + 1].astype(np.float32)
-        region *= (1.0 - alpha)
+        region = frame[y0:y1, x : x + 1].astype(np.float32)
+        region *= 1.0 - alpha
         region += col[None, None, :] * alpha
-        frame[y0:y1, x:x + 1] = region.astype(np.uint8)
+        frame[y0:y1, x : x + 1] = region.astype(np.uint8)

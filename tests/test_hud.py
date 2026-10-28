@@ -4,6 +4,7 @@ Nao ha o que comparar pixel a pixel: o objetivo aqui e garantir que o HUD
 desenha em qualquer resolucao, preserva o frame recebido e reage a tema,
 overlay e estado vazio sem quebrar.
 """
+
 import sys
 import unittest
 from pathlib import Path
@@ -18,9 +19,14 @@ from libras.ui import Hud, HudState, get_theme
 
 RESOLUCOES = ((240, 320), (480, 640), (720, 1280))
 
-FRASE = Phrase(text="OLA MUNDO", current="R", candidates=["R", "P"],
-               needs="polegar", votes=[("R", 2.4), ("P", 0.8)],
-               confidence=0.75)
+FRASE = Phrase(
+    text="OLA MUNDO",
+    current="R",
+    candidates=["R", "P"],
+    needs="polegar",
+    votes=[("R", 2.4), ("P", 0.8)],
+    confidence=0.75,
+)
 
 
 def fundo(w, h):
@@ -47,8 +53,9 @@ class TestHud(unittest.TestCase):
         st = HudState(hands=[], phrase=FRASE, fps=12.0)
         escuro = Hud(get_theme("dark")).render(fundo(640, 480), st).copy()
         claro = Hud(get_theme("light")).render(fundo(640, 480), st).copy()
-        self.assertGreater(int(claro.mean()), int(escuro.mean()),
-                           "o tema claro devia clarear os paineis")
+        self.assertGreater(
+            int(claro.mean()), int(escuro.mean()), "o tema claro devia clarear os paineis"
+        )
 
     def test_toggle_troca_o_tema(self):
         hud = Hud(get_theme("dark"))
@@ -57,9 +64,8 @@ class TestHud(unittest.TestCase):
         self.assertTrue(hud.toggle_theme().dark)
 
     def test_texto_aparece_no_cartao(self):
-        out = Hud(get_theme("dark")).render(fundo(480, 640),
-                                            HudState(phrase=FRASE))
-        rodape = out[480 - 200:, :]
+        out = Hud(get_theme("dark")).render(fundo(480, 640), HudState(phrase=FRASE))
+        rodape = out[480 - 200 :, :]
         brilho = int(rodape.max())
         self.assertGreater(brilho, 200, "nenhum texto claro no rodape")
 
@@ -80,11 +86,12 @@ class TestHud(unittest.TestCase):
         hud = Hud(get_theme("dark"))
         frame = fundo(480, 640)
         hud._glow(frame, 320, 240, 30, (56, 189, 248), 1.0)
-        b, g, r = frame[240, 320]
+        b, _g, r = frame[240, 320]
         self.assertGreater(int(b), int(r), "o azul devia dominar o ciano")
 
     def test_escala_fica_no_intervalo(self):
         from libras.ui.hud import _scale
+
         self.assertAlmostEqual(_scale(1280), 1.0, places=3)
         self.assertGreaterEqual(_scale(320), 0.60)
         self.assertLessEqual(_scale(3840), 1.20)
@@ -99,13 +106,13 @@ class TestHud(unittest.TestCase):
         cheio = len(hud._text_cache)
         for _ in range(20):
             hud.render(fundo(480, 640), st)
-        self.assertLessEqual(len(hud._text_cache), cheio + 8,
-                             "o cache cresceu demais com o mesmo conteudo")
+        self.assertLessEqual(
+            len(hud._text_cache), cheio + 8, "o cache cresceu demais com o mesmo conteudo"
+        )
 
     def test_skeleton_com_mao(self):
         mao = make_pose(curl=(0, 0, 0, 0, 0), scale=0.25)
-        st = HudState(hands=[mao], phrase=FRASE, fps=30.0,
-                      hold_progress=2, hold_total=5)
+        st = HudState(hands=[mao], phrase=FRASE, fps=30.0, hold_progress=2, hold_total=5)
         out = Hud(get_theme("dark")).render(fundo(640, 480), st)
         self.assertEqual(out.shape, (480, 640, 3))
 

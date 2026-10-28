@@ -10,6 +10,7 @@ tokens e a mesma, nao um desenho novo -- o HUD so le a paleta.
 
 Este projeto escreve os comentarios sem acentos, como no resto do codigo.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -30,29 +31,29 @@ class Theme:
     name: str
     dark: bool
 
-    bg: RGB            # fundo da moldura (tambem o veu do degrade)
-    surface: RGB       # superficie solida minima (chips, keycaps)
-    glass_tint: RGB    # cor do veu atras do texto
+    bg: RGB  # fundo da moldura (tambem o veu do degrade)
+    surface: RGB  # superficie solida minima (chips, keycaps)
+    glass_tint: RGB  # cor do veu atras do texto
     glass_alpha: float
-    border: RGB        # linha/base dos contornos
+    border: RGB  # linha/base dos contornos
     border_alpha: float
 
-    text: RGB          # texto principal
-    text_dim: RGB      # texto secundario
-    text_faint: RGB    # texto terciario / placeholders
+    text: RGB  # texto principal
+    text_dim: RGB  # texto secundario
+    text_faint: RGB  # texto terciario / placeholders
 
-    primary: RGB       # cor de destaque (ciano)
-    accent: RGB        # cor de acento (ambar)
+    primary: RGB  # cor de destaque (ciano)
+    accent: RGB  # cor de acento (ambar)
     success: RGB
     danger: RGB
 
     line_alpha: float  # opacidade das linhas finas (brackets, trilhas)
-    glow: float        # intensidade do brilho dos elementos primarios
+    glow: float  # intensidade do brilho dos elementos primarios
 
-    bone: RGB          # ossos do esqueleto da mao
+    bone: RGB  # ossos do esqueleto da mao
     bone_alpha: float
     joint: RGB
-    tip: RGB           # pontas dos dedos
+    tip: RGB  # pontas dos dedos
 
     def rgb(self, color: RGB) -> RGB:
         return tuple(int(round(c)) for c in color)
@@ -151,30 +152,41 @@ _FONT_DIRS = (
 # (padrao de glob, altura em px, weight)
 _FONT_SPECS = {
     "mono": (
-        ("JetBrainsMono-Bold.ttf", "JetBrainsMono-ExtraBold.ttf", "JetBrainsMono-SemiBold.ttf",
-         "DejaVuSansMono-Bold.ttf", "LiberationMono-Bold.ttf"),
-        40, "bold",
+        (
+            "JetBrainsMono-Bold.ttf",
+            "JetBrainsMono-ExtraBold.ttf",
+            "JetBrainsMono-SemiBold.ttf",
+            "DejaVuSansMono-Bold.ttf",
+            "LiberationMono-Bold.ttf",
+        ),
+        40,
+        "bold",
     ),
     "mono_medium": (
-        ("JetBrainsMono-Medium.ttf", "JetBrainsMono-Regular.ttf", "DejaVuSansMono.ttf",
-         "LiberationMono-Regular.ttf"),
-        40, "regular",
+        (
+            "JetBrainsMono-Medium.ttf",
+            "JetBrainsMono-Regular.ttf",
+            "DejaVuSansMono.ttf",
+            "LiberationMono-Regular.ttf",
+        ),
+        40,
+        "regular",
     ),
     # rotulos: sans leve e espaçado, a voz "tecnica" do HUD
     "label": (
-        ("Roboto-Medium.ttf", "Roboto-Regular.ttf", "DejaVuSans.ttf",
-         "LiberationSans-Regular.ttf"),
-        40, "medium",
+        ("Roboto-Medium.ttf", "Roboto-Regular.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
+        40,
+        "medium",
     ),
     "label_light": (
-        ("Roboto-Regular.ttf", "Roboto-Light.ttf", "DejaVuSans.ttf",
-         "LiberationSans-Regular.ttf"),
-        40, "regular",
+        ("Roboto-Regular.ttf", "Roboto-Light.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
+        40,
+        "regular",
     ),
     "sans_bold": (
-        ("Roboto-Bold.ttf", "Roboto-Black.ttf", "DejaVuSans-Bold.ttf",
-         "LiberationSans-Bold.ttf"),
-        40, "bold",
+        ("Roboto-Bold.ttf", "Roboto-Black.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf"),
+        40,
+        "bold",
     ),
 }
 

@@ -28,14 +28,52 @@ python app.py --source video.mp4 --no-gui   # sem janela, so no terminal
 
 Controles na janela de video:
 
-| Tecla  | Acao                          |
-|--------|-------------------------------|
-| Q/ESC  | sai                           |
-| Espaco | confirma a letra atual        |
-| B      | apaga o ultimo caractere      |
-| C      | limpa a frase                 |
+| Tecla   | Acao                                     |
+|---------|-------------------------------------------|
+| Q/ESC   | sai                                      |
+| Espaco  | confirma a letra atual                    |
+| B       | apaga o ultimo caractere                  |
+| C       | limpa a frase                             |
+| ENTER   | salva a frase no historico (H abre)      |
+| + / -   | sobe / desce o piso de confianca          |
+| [ / ]   | encolhe / amplia a margem de votos        |
+| T       | alterna o tema claro/escuro               |
+| ?  /    | abre a lista de atalhos                   |
+
+Os ajustes de `+ / - / [ / ]` ficam salvos em `models/tuning.json` e valem
+nas proximas execucoes. Com `--log-misses data/misses.npz`, apagar com `B`
+uma letra que acabou de entrar grava os landmarks dela no arquivo; depois
+
+```
+python tools/relabel_misses.py data/misses.npz --as <letra certa>
+```
+
+rotula os registros e anexa ao dataset de treino (`data/samples.npz`) --
+o ciclo de melhora continua com `tools/train_classifier.py`.
 
 Como e datilologia, uma letra precisa se **manter** na mesma pose por alguns
 quadros (`--hold`, padrao 5) para entrar na frase, e depois de aceita ha um
 `cooldown` para a mao poder sair e voltar. Uma pausa longa vira espaco entre
 palavras.
+
+## Modelos
+
+O classificador estatico (`models/dactylology_clf.npz`) cobre as 20 letras
+estaticas; e treinado com
+
+```
+python tools/train_classifier.py
+```
+
+As 6 letras dinamicas (H, J, K, X, Y, Z) tem movimento e nao cabem num
+quadro so. O modelo temporal (`models/dactylology_motion_clf.npz`) cobre
+elas, e precisa de sequencias no dataset (cada rajada de gravacao do
+`tools/collect_samples.py` vira um grupo):
+
+```
+python tools/train_classifier.py --motion
+```
+
+O detector de palma roda a cada `--palm-every` quadros (padrao 2) enquanto
+uma mao esta seguida, e a cada quadro quando nao ha mao -- o landmarker
+roda sempre.
